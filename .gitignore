@@ -1,0 +1,62 @@
+# ========== Node ==========
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ========== SvelteKit ==========
+.svelte-kit/
+build/
+dist/
+*.local
+
+# ========== Python ==========
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.coverage
+htmlcov/
+.pdm.toml
+*.egg-info/
+.eggs/
+
+# ========== Tauri ==========
+src-tauri/target/
+src-tauri/gen/
+src-tauri/bin/
+*.rs.bk
+
+# ========== IDE / Editor ==========
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ========== OS ==========
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========== Logs ==========
+logs/
+*.log
+
+# ========== Environment ==========
+.env
+.env.local
+.env.*.local
