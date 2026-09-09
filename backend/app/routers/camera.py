@@ -36,7 +36,7 @@ async def video_stream(
     if not camera.start():
         return Response(status_code=500, content="Camera not available")
     
-    return StreamingResponse(
+    return StreamingResponse( #记得同步
         camera.generate_mjpeg_stream(resize=(width, height)),
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
