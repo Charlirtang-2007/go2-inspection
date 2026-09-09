@@ -13,7 +13,7 @@
 from fastapi import APIRouter, Response, Query
 from app.services.camera_service import CameraService
 from typing import Optional
-
+from fastapi.responses import StreamingResponse
 router = APIRouter(prefix="/api/camera", tags=["camera"])
 
 # 全局摄像头服务实例（懒加载）
@@ -36,7 +36,7 @@ async def video_stream(
     if not camera.start():
         return Response(status_code=500, content="Camera not available")
     
-    return Response(
+    return StreamingResponse(
         camera.generate_mjpeg_stream(resize=(width, height)),
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
