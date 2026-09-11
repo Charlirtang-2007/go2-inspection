@@ -1,6 +1,6 @@
 <script lang="ts">
-  // 后端地址（改成你的AI机台IP）
-  const API_BASE = import.meta.env.VITE_API_BASE || 'http://192.168.3.137:8000';
+  // 后端地址（只填主机，不带路径） 记得改
+  const API_BASE = import.meta.env.VITE_API_BASE || 'http://192.168.169.127:8000';
   const videoUrl = `${API_BASE}/api/camera/video?width=640&height=480`;
 
   let status = $state<'connecting' | 'connected' | 'error'>('connecting');

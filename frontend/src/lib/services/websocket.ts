@@ -33,7 +33,7 @@ class WebSocketService {
   connect() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
-    this.ws = new WebSocket('ws://localhost:8000/ws');
+    this.ws = new WebSocket('ws://192.168.169.127:8000/ws'); // 记得改
     this.status.set('connecting');
 
     this.ws.onopen = () => {

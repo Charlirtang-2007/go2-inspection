@@ -5,6 +5,10 @@
   import { wsService } from '$lib/services/websocket';
   import LogViewer from '$lib/components/LogViewer.svelte';
 
+  // 👇 视频流地址 #记得改
+  const API_BASE = import.meta.env.VITE_API_BASE || 'http://192.168.169.127:8000';
+  const videoUrl = `${API_BASE}/api/camera/video?width=640&height=480`;
+
   // ===== 响应式状态（Svelte 5） =====
   let status = $state('待命');
   let battery = $state(85);
@@ -33,13 +37,9 @@
   function startInspection() {
     if (inspectionRunning) return;
 
-    // 1. 通过 WebSocket 发送开始指令（后端若有实现会接管）
     wsService.send({ type: 'command', data: { cmd: 'start_inspection' } });
-
-    // 2. 本地模拟巡检流程（若后端未实现，则前端模拟）
     startLocalSimulation();
 
-    // 3. 更新本地状态
     inspectionRunning = true;
     inspectionProgress = 0;
     inspectionStep = '初始化巡检...';
@@ -49,7 +49,7 @@
     ]);
   }
 
-  // ===== 本地模拟巡检（降级方案） =====
+  // ===== 本地模拟巡检 =====
   function startLocalSimulation() {
     const steps = [
       { progress: 10, step: '前往设备区 A' },
@@ -65,7 +65,6 @@
 
     inspectionTimer = setInterval(() => {
       if (index >= steps.length) {
-        // 巡检完成
         inspectionRunning = false;
         inspectionProgress = 100;
         inspectionStep = '✅ 巡检完成！';
@@ -81,14 +80,12 @@
       const step = steps[index];
       inspectionProgress = step.progress;
       inspectionStep = step.step;
-      
-      // 正常步骤日志
+
       logStore.update(logs => [
         { time: new Date().toLocaleTimeString(), level: 'info', message: `🔄 ${step.step}...` },
         ...logs
       ]);
 
-      // 随机触发异常（在特定步骤增加报警）
       if (index === 3 && Math.random() > 0.5) {
         logStore.update(logs => [
           { time: new Date().toLocaleTimeString(), level: 'error', message: '🔥 警告：发现火焰！' },
@@ -103,10 +100,10 @@
       }
 
       index++;
-    }, 2000); // 每2秒推进一个步骤
+    }, 2000);
   }
 
-  // ===== 紧急停止（同时停止巡检） =====
+  // ===== 紧急停止 =====
   function emergencyStop() {
     sendCommand('emergency_stop');
     if (inspectionTimer) {
@@ -134,6 +131,7 @@
 </script>
 
 <div class="min-h-screen bg-gray-50 p-4 flex flex-col">
+
   <!-- ===== 顶部标题 ===== -->
   <div class="flex-shrink-0 max-w-6xl mx-auto w-full mb-2">
     <div class="flex items-center justify-between">
@@ -149,6 +147,8 @@
 
   <!-- ===== 主区域：状态 + 视频 ===== -->
   <div class="flex-shrink-0 max-w-6xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-3">
+
+    <!-- 机器狗状态面板 -->
     <div class="lg:col-span-1">
       <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 h-full">
         <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -188,7 +188,6 @@
           <span class="text-sm text-gray-700">{task}</span>
         </div>
 
-        <!-- 巡检进度（仅在巡检中显示） -->
         {#if inspectionRunning || inspectionProgress > 0}
         <div class="mt-3 pt-3 border-t border-gray-100">
           <div class="flex justify-between items-center text-xs">
@@ -207,6 +206,7 @@
       </div>
     </div>
 
+    <!-- 视频监控区域 -->
     <div class="lg:col-span-2">
       <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-3 h-full">
         <div class="flex items-center justify-between mb-2">
@@ -216,19 +216,22 @@
             LIVE
           </span>
         </div>
-        <div class="aspect-video bg-gray-900 rounded-lg flex items-center justify-center text-gray-500 text-sm">
-          <div class="text-center">
-            <div class="text-4xl mb-1">🎥</div>
-            <p class="text-xs">等待视频流...</p>
-            <p class="text-xs text-gray-600 mt-0.5">后端启动后自动显示</p>
-          </div>
+        <div class="aspect-video bg-gray-900 rounded-lg overflow-hidden flex items-center justify-center">
+          <img
+            src={videoUrl}
+            alt="机器狗摄像头画面"
+            class="w-full h-full object-contain"
+          />
         </div>
       </div>
     </div>
+
   </div>
 
   <!-- ===== 底部区域：控制 + 日志 ===== -->
   <div class="flex-shrink-0 max-w-6xl mx-auto w-full mt-3 grid grid-cols-1 lg:grid-cols-3 gap-3">
+
+    <!-- 控制面板 -->
     <div class="lg:col-span-1">
       <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 h-full flex flex-col">
         <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -265,7 +268,6 @@
           </button>
         </div>
 
-        <!-- 功能按钮 -->
         <div class="flex flex-wrap gap-1.5 justify-center mt-2">
           <button 
             onclick={() => sendCommand('standup')}
@@ -284,7 +286,6 @@
           </button>
         </div>
 
-        <!-- 开始巡检按钮 -->
         <button 
           onclick={startInspection}
           disabled={inspectionRunning}
@@ -296,6 +297,7 @@
       </div>
     </div>
 
+    <!-- 日志面板 -->
     <div class="lg:col-span-2">
       <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 h-full flex flex-col">
         <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -304,5 +306,7 @@
         <LogViewer />
       </div>
     </div>
+
   </div>
+
 </div>
