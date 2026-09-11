@@ -1,84 +1,140 @@
+# app/main.py
+# 后端主接口
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-import asyncio
+from fastapi.responses import JSONResponse
 import json
+import asyncio
 
-app = FastAPI(title="Go2 巡检系统 API", version="1.0.0")
+from app.routers import robot, camera, detection, route
+from app.utils.websocket_manager import manager
+from app.services.robot_factory import get_robot_service
 
-# CORS 配置（允许前端访问）
+app = FastAPI(
+    title="Go2 巡检系统 API",
+    version="2.0.0",
+    description="基于 FastAPI + WebSocket 的机器狗巡检系统"
+)
+
+# CORS 配置
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# 存储所有活跃的 WebSocket 连接
-active_connections: list[WebSocket] = []
 
-async def broadcast_status():
-    """模拟状态变化，广播给所有连接的客户端"""
-    import random
-    statuses = ['在线', '巡检中', '待命']
-    while True:
-        if active_connections:
-            msg = {
-                "type": "status_update",
-                "data": {
-                    "status": random.choice(statuses),
-                    "battery": random.randint(70, 100),
-                    "mode": "自动"
-                }
-            }
-            for conn in active_connections:
-                try:
-                    await conn.send_text(json.dumps(msg))
-                except:
-                    pass
-        await asyncio.sleep(3)  # 每3秒推送一次
+# 注册路由
+app.include_router(robot.router)
+app.include_router(camera.router)
+app.include_router(detection.router)
+app.include_router(route.router)
+
+
+# ========== 指令处理辅助函数 ==========
+
+async def execute_robot_command(cmd: str):
+    """执行机器狗指令，返回结果"""
+    robot_service = get_robot_service()
+
+    if cmd in ["standup", "stand_up", "站立"]:
+        return robot_service.stand_up()
+    elif cmd in ["sit", "sit_down", "坐下"]:
+        return robot_service.sit_down()
+    elif cmd in ["forward", "前进"]:
+        return robot_service.move(0.3, 0, 0)
+    elif cmd in ["backward", "后退"]:
+        return robot_service.move(-0.3, 0, 0)
+    elif cmd in ["left", "左转"]:
+        return robot_service.move(0, 0, 0.3)
+    elif cmd in ["right", "右转"]:
+        return robot_service.move(0, 0, -0.3)
+    elif cmd in ["stop", "停止"]:
+        return robot_service.stop_move()
+    else:
+        return {"success": False, "error": f"未知指令: {cmd}"}
+
+
+# ========== WebSocket 端点 ==========
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    active_connections.append(websocket)
-    print(f"✅ 新客户端连接，当前连接数: {len(active_connections)}")
+    await manager.connect(websocket)
     try:
         while True:
             data = await websocket.receive_text()
-            print(f"📩 收到指令: {data}")
-            
-            # 解析 JSON 消息
             try:
                 msg = json.loads(data)
-                if msg.get("type") == "command":
+                msg_type = msg.get("type")
+
+                if msg_type == "subscribe":
+                    topics = msg.get("topics", [])
+                    manager.connection_data[websocket]["subscribed"] = topics
+                    await manager.send_json(websocket, {
+                        "type": "subscribed",
+                        "topics": topics
+                    })
+
+                elif msg_type == "command":
                     cmd = msg.get("data", {}).get("cmd")
-                    print(f"🎮 执行指令: {cmd}")
-                    # TODO: 后续替换为真实的机器狗控制
-                    # 这里先模拟执行，回传确认消息
-                    await websocket.send_text(json.dumps({
-                        "type": "command_ack",
-                        "data": {"cmd": cmd, "status": "executed"}
-                    }))
+                    print(f"🎮 WebSocket 指令: {cmd}")
+
+                    try:
+                        result = await execute_robot_command(cmd)
+                        await manager.send_json(websocket, {
+                            "type": "command_ack",
+                            "data": {
+                                "cmd": cmd,
+                                "status": "executed" if result.get("success") else "failed",
+                                "detail": result
+                            }
+                        })
+                    except Exception as e:
+                        await manager.send_json(websocket, {
+                            "type": "command_ack",
+                            "data": {
+                                "cmd": cmd,
+                                "status": "error",
+                                "error": str(e)
+                            }
+                        })
+
+                else:
+                    await manager.send_json(websocket, {
+                        "type": "error",
+                        "message": f"未知消息类型: {msg_type}"
+                    })
+
             except json.JSONDecodeError:
-                print(f"⚠️ 无效的 JSON: {data}")
-                
+                await manager.send_json(websocket, {
+                    "type": "error",
+                    "message": "无效的 JSON 格式"
+                })
+
     except WebSocketDisconnect:
-        active_connections.remove(websocket)
-        print(f"❌ 客户端断开，当前连接数: {len(active_connections)}")
+        manager.disconnect(websocket)
 
 
-@app.on_event("startup")
-async def startup():
-    # 启动后台广播任务
-    asyncio.create_task(broadcast_status())
+# ========== 健康检查 ==========
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "Go2 巡检系统后端"}
+
+
 @app.get("/")
 async def root():
-    return {"message": "Go2 巡检系统后端运行中 ✅"}
-
-@app.get("/api/status")
-async def get_status():
-    return {"status": "online", "battery": 85, "mode": "待命"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return {
+        "service": "Go2 巡检系统 API",
+        "version": "2.0.0",
+        "endpoints": {
+            "/api/robot/status": "获取机器狗状态",
+            "/api/robot/command": "发送控制指令",
+            "/api/camera/video": "MJPEG 视频流",
+            "/api/detection/aruco": "ArUco 标记检测",
+            "/api/detection/anomaly": "异常检测（火焰/烟雾/漏油）",
+            "/api/route/list": "路线列表",
+            "/ws": "WebSocket 连接"
+        }
+    }

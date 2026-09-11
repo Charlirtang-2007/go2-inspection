@@ -3,3 +3,6 @@ uvicorn[standard]
 websockets
 python-multipart
 pydantic-settings
+opencv-python
+opencv-contrib-python
+numpy

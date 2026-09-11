@@ -1,0 +1,12 @@
+[
+  {
+    "id": 1,
+    "name": "默认路线",
+    "points": [],
+    "status": "deployed",
+    "created_by": "甲方",
+    "created_at": "2026-09-10T15:07:36.662722",
+    "deployed_at": "2026-09-10T15:09:03.282481",
+    "round_trip": true
+  }
+]

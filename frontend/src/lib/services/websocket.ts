@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import { robotStore } from '$lib/stores/robot';
+import { robotStore, type RobotStatus } from '$lib/stores/robot';
 import { logStore } from '$lib/stores/log';
 
 type WSMessage = {
@@ -12,10 +12,28 @@ class WebSocketService {
   private reconnectTimer: number | null = null;
   public status = writable<'connecting' | 'connected' | 'disconnected'>('disconnected');
 
+  private normalizeRobotStatus(payload: any): Partial<RobotStatus> {
+    if (!payload || typeof payload !== 'object') {
+      return {};
+    }
+
+    const resolvedStatus = payload.status ?? payload.current_state ?? '待命';
+    const resolvedTask = payload.current_task ?? payload.task ?? null;
+
+    return {
+      connected: payload.connected ?? true,
+      status: resolvedStatus,
+      battery: typeof payload.battery === 'number' ? payload.battery : 0,
+      mode: payload.mode ?? '手动',
+      current_task: resolvedTask,
+      current_state: payload.current_state ?? resolvedStatus
+    };
+  }
+
   connect() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
-    this.ws = new WebSocket('ws://localhost:8000/ws');
+    this.ws = new WebSocket('ws://192.168.169.127:8000/ws'); // 记得改
     this.status.set('connecting');
 
     this.ws.onopen = () => {
@@ -48,7 +66,10 @@ class WebSocketService {
   private handleMessage(msg: WSMessage) {
     switch (msg.type) {
       case 'status_update':
-        robotStore.set(msg.data);
+        robotStore.update((current) => ({
+          ...current,
+          ...this.normalizeRobotStatus(msg.data)
+        }));
         break;
       case 'log':
         logStore.update(logs => [msg.data, ...logs].slice(0, 100));
