@@ -1,3 +1,104 @@
-@tailwind base; 
-@tailwind components; 
-@tailwind utilities; 
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body { height: 100%; }
+
+  body {
+    @apply bg-ink-900 text-slate-200 font-sans antialiased;
+    background-image:
+      radial-gradient(1200px 600px at 8% -10%, rgba(34, 211, 238, 0.10), transparent 60%),
+      radial-gradient(1000px 520px at 100% 0%, rgba(167, 139, 250, 0.10), transparent 60%),
+      radial-gradient(900px 700px at 50% 120%, rgba(59, 130, 246, 0.10), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  ::selection { @apply bg-neon-cyan/30 text-white; }
+}
+
+@layer components {
+  /* -------- 标签按钮 -------- */
+  .tab {
+    @apply relative inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium
+           text-slate-400 transition-all duration-300 whitespace-nowrap
+           hover:text-slate-100 hover:bg-white/5;
+  }
+  .tab-active {
+    @apply text-white bg-ink-600/70;
+    box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35),
+                0 0 24px rgba(34, 211, 238, 0.25),
+                inset 0 0 12px rgba(34, 211, 238, 0.06);
+  }
+  .tab-active::after {
+    content: '';
+    position: absolute;
+    left: 16%; right: 16%;
+    bottom: -6px;
+    height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, transparent, #22d3ee, transparent);
+    animation: glow-pulse 2.2s ease-in-out infinite;
+  }
+
+  /* -------- 卡片 -------- */
+  .card {
+    @apply relative rounded-2xl bg-ink-800/70 border border-white/5 backdrop-blur-xl;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  }
+  .card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(135deg, rgba(34,211,238,0.06), transparent 45%);
+  }
+  .card-hover {
+    @apply transition-all duration-300;
+  }
+  .card-hover:hover {
+    border-color: rgba(34, 211, 238, 0.25);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45), 0 0 24px rgba(34,211,238,0.15);
+    transform: translateY(-2px);
+  }
+
+  /* -------- 芯片/标签 -------- */
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono
+           border border-white/10 bg-white/5 text-slate-300;
+  }
+
+  /* -------- 电量条 -------- */
+  .bar-track {
+    @apply relative w-full h-2 rounded-full bg-ink-600/60 overflow-hidden;
+  }
+  .bar-fill {
+    @apply h-full rounded-full transition-all duration-700 ease-out relative overflow-hidden;
+  }
+  .bar-fill::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent);
+    animation: scan 2.2s linear infinite;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.28);
+    border-radius: 999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.5);
+  }
+  .text-glow { text-shadow: 0 0 18px currentColor; }
+  .page-enter { animation: tab-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+}

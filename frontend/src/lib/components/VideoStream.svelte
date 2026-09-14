@@ -5,28 +5,51 @@
 
   let status = $state<'connecting' | 'connected' | 'error'>('connecting');
 
-  function handleLoad() {
-    status = 'connected';
-  }
-
-  function handleError() {
-    status = 'error';
-  }
+  function handleLoad()  { status = 'connected'; }
+  function handleError() { status = 'error'; }
 </script>
 
-<div class="video-container">
-  <div class="video-header">
-    <span>📷 实时监控</span>
-    <span class="status-badge status-{status}">
-      {status === 'connecting' ? '● 连接中' : status === 'connected' ? '● 已连接' : '● 连接失败'}
+<div class="card p-4">
+  <div class="flex items-center justify-between mb-3">
+    <div class="flex items-center gap-2">
+      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
+        📷 实时监控
+      </h2>
+      <span class="chip">
+        {status === 'connecting' ? '● 连接中' : status === 'connected' ? '● 已连接' : '● 连接失败'}
+      </span>
+    </div>
+
+    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono
+                 border border-neon-red/30 bg-neon-red/10 text-neon-red">
+      <span class="relative flex w-1.5 h-1.5">
+        <span class="absolute inset-0 rounded-full bg-neon-red animate-pulse-ring"></span>
+        <span class="relative w-1.5 h-1.5 rounded-full bg-neon-red"></span>
+      </span>
+      LIVE
     </span>
   </div>
 
-  <div class="video-body">
+  <div class="relative aspect-video rounded-xl overflow-hidden bg-ink-900
+              border border-white/5 shadow-glow-soft">
+    <!-- 扫描线 -->
+    <div class="pointer-events-none absolute inset-0 z-10">
+      <div class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-neon-cyan/60 to-transparent"></div>
+    </div>
+
     {#if status === 'error'}
-      <div class="error-placeholder">
-        <span>⚠️ 视频流加载失败</span>
-        <button onclick={() => location.reload()}>重试</button>
+      <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-400">
+        <span class="text-3xl">⚠️</span>
+        <span class="text-sm">视频流加载失败</span>
+        <button
+          type="button"
+          onclick={() => location.reload()}
+          class="px-4 py-1.5 rounded-lg text-xs font-medium
+                 bg-neon-blue/15 border border-neon-blue/30 text-neon-blue
+                 hover:bg-neon-blue/25 transition-colors"
+        >
+          重试
+        </button>
       </div>
     {:else}
       <img
@@ -34,68 +57,8 @@
         alt="机器狗摄像头画面"
         onload={handleLoad}
         onerror={handleError}
+        class="w-full h-full object-contain"
       />
     {/if}
   </div>
 </div>
-
-<style>
-  .video-container {
-    background: #1a1a2e;
-    border-radius: 8px;
-    overflow: hidden;
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
-  }
-
-  .video-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 16px;
-    background: #252540;
-    color: #fff;
-    font-size: 14px;
-  }
-
-  .status-badge {
-    font-size: 12px;
-    padding: 2px 10px;
-    border-radius: 12px;
-  }
-
-  .status-connecting { background: #ffc107; color: #333; }
-  .status-connected { background: #28a745; color: #fff; }
-  .status-error { background: #dc3545; color: #fff; }
-
-  .video-body {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: #1a1a2e;
-    min-height: 300px;
-  }
-
-  .video-body img {
-    width: 100%;
-    height: auto;
-    max-height: 400px;
-    object-fit: contain;
-    display: block;
-  }
-
-  .error-placeholder {
-    color: #888;
-    text-align: center;
-    padding: 40px;
-  }
-
-  .error-placeholder button {
-    margin-top: 12px;
-    padding: 6px 20px;
-    background: #2196F3;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-  }
-</style>
