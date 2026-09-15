@@ -11,9 +11,9 @@ export interface RobotStatus {
 
 export const robotStore = writable<RobotStatus>({
   connected: true,
-  status: '待命',
+  status: '待机',
   battery: 85,
   mode: '手动',
   current_task: null,
-  current_state: '待命'
+  current_state: '待机'
 });

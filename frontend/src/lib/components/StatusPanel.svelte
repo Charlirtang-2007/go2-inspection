@@ -1,20 +1,11 @@
 <script lang="ts">
   let {
-    status = '待命',
+    status = '待机',
     battery = 0,
-    task = '无',
     progress = 0,
     step = '',
     running = false
   } = $props();
-
-  const statusTheme = $derived(
-    status === '在线'
-      ? { chip: 'border-neon-green/30 bg-neon-green/10 text-neon-green', dot: 'bg-neon-green' }
-      : status === '巡检中'
-      ? { chip: 'border-neon-blue/30 bg-neon-blue/10 text-neon-blue',   dot: 'bg-neon-blue' }
-      : { chip: 'border-white/10 bg-white/5 text-slate-400',            dot: 'bg-slate-400' }
-  );
 
   const batteryTheme = $derived(
     battery > 60
@@ -35,13 +26,6 @@
       <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
         📊 机器狗状态
       </h2>
-      <span class="chip {statusTheme.chip}">
-        <span class="relative flex w-2 h-2">
-          <span class="absolute inset-0 rounded-full {statusTheme.dot} animate-pulse-ring"></span>
-          <span class="relative w-2 h-2 rounded-full {statusTheme.dot}"></span>
-        </span>
-        {status}
-      </span>
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -61,7 +45,7 @@
         <div class="flex items-center justify-between mb-2">
           <span class="text-xs text-slate-400">📋 当前任务</span>
         </div>
-        <p class="text-sm text-slate-200 truncate">{task}</p>
+        <p class="text-sm text-slate-200 truncate">{status}</p>
       </div>
     </div>
 

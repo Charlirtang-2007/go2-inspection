@@ -11,24 +11,22 @@
 
   // ===== 响应式状态（Svelte 5）=====
   // 这些值来自 robotStore 订阅，不是自己产生的
-  let status = $state('待命');
+  let status = $state('待机');
   let battery = $state(85);
-  let task = $state('无');
 
   // ===== 巡检状态（本地 UI 状态，不涉及通信）=====
   let inspectionRunning = $state(false);
   let inspectionProgress = $state(0);
   let inspectionStep = $state('');
   let inspectionTimer: any = null;
+  let idleTimer: any = null;   // 30 秒无操控自动回到待机的定时器
 
   // ===== 标签页状态（纯 UI，不涉及通信）=====
-  type TabKey = 'overview' | 'video' | 'control' | 'log';
+  type TabKey = 'overview' | 'control';
   let activeTab: TabKey = $state('overview');
   const tabs: { key: TabKey; label: string; icon: string }[] = [
     { key: 'overview', label: '总览', icon: '📊' },
-    { key: 'video',    label: '视频', icon: '📷' },
-    { key: 'control',  label: '控制', icon: '🎮' },
-    { key: 'log',      label: '日志', icon: '📋' }
+    { key: 'control',  label: '操控', icon: '🎮' }
   ];
 
   // ===== 订阅 robotStore（接收 WS 推送的状态）=====
@@ -36,14 +34,79 @@
   const unsubscribe = robotStore.subscribe((value) => {
     status = value.status;
     battery = value.battery;
-    task = value.current_task || '无';
   });
+
+  // ===== 30 秒无操控自动回到待机 =====
+  function setMoving() {
+    status = '移动';
+    clearIdle();
+    idleTimer = setTimeout(() => {
+      status = '待机';
+      idleTimer = null;
+    }, 30000);
+  }
+
+  function clearIdle() {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
 
   // ===== 发送控制指令 =====
   // ★ 通信发送端：把指令通过 wsService 发出去，逻辑与原版完全一致
   function sendCommand(cmd: string) {
     console.log('📩 指令:', cmd);
     wsService.send({ type: 'command', data: { cmd } });
+
+    // 根据指令更新状态显示：运动→移动，停止/站立/坐下→待机
+    if (['forward', 'backward', 'left', 'right'].includes(cmd)) {
+      setMoving();
+    } else if (['stop', 'standup', 'sit'].includes(cmd)) {
+      status = '待机';
+      clearIdle();
+    }
+  }
+
+  // ===== 键盘控制（WASD / 方向键 / 空格）=====
+  function handleKeydown(event: KeyboardEvent) {
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    // 忽略输入框、文本域、下拉选择或可编辑元素，避免干扰用户输入
+    if (target && (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable)) {
+      return;
+    }
+
+    const keyMap: Record<string, string> = {
+      w: 'forward',
+      arrowup: 'forward',
+      s: 'backward',
+      arrowdown: 'backward',
+      a: 'left',
+      arrowleft: 'left',
+      d: 'right',
+      arrowright: 'right'
+    };
+
+    const key = event.key.toLowerCase();
+    const cmd = key === ' ' ? 'stop' : keyMap[key];
+    if (cmd) {
+      // 拦截默认行为（页面滚动 / 焦点移动），避免按键触发标签页切换
+      event.preventDefault();
+      event.stopPropagation();
+      sendCommand(cmd);
+
+      // 记录反馈：写入总览日志 + 操控页最近指令
+      const labels: Record<string, string> = {
+        forward: '前进', backward: '后退', left: '左转', right: '右转', stop: '停止'
+      };
+      const name = labels[cmd] ?? cmd;
+      const time = new Date().toLocaleTimeString();
+      logStore.update(logs => [
+        { time, level: 'info', message: `⌨️ 键盘控制：${name} (${cmd})` },
+        ...logs
+      ]);
+    }
   }
 
   // ===== 开始巡检 =====
@@ -55,6 +118,8 @@
 
     startLocalSimulation(); // 本地模拟进度（不涉及通信）
 
+    status = '巡检中';
+    clearIdle();
     inspectionRunning = true;
     inspectionProgress = 0;
     inspectionStep = '初始化巡检...';
@@ -84,6 +149,8 @@
         inspectionRunning = false;
         inspectionProgress = 100;
         inspectionStep = '✅ 巡检完成！';
+        status = '待机';
+        clearIdle();
         logStore.update(logs => [
           { time: new Date().toLocaleTimeString(), level: 'success', message: '✅ 巡检任务完成，共发现 1 处异常' },
           ...logs
@@ -131,6 +198,8 @@
     inspectionRunning = false;
     inspectionProgress = 0;
     inspectionStep = '⛔ 已紧急停止';
+    status = '待机';
+    clearIdle();
     logStore.update(logs => [
       { time: new Date().toLocaleTimeString(), level: 'error', message: '⛔ 紧急停止触发，巡检中断' },
       ...logs
@@ -141,18 +210,23 @@
   onMount(() => {
     // ★ 通信入口：页面挂载时建立 WebSocket 连接
     wsService.connect();
+    window.addEventListener('keydown', handleKeydown, { capture: true });
   });
 
   onDestroy(() => {
-    // ★ 通信出口：页面卸载时断开 WebSocket + 取消订阅 + 清定时器
+    // ★ 通信出口：页面卸载时断开 WebSocket + 取消订阅 + 清定时器 + 移除键盘监听
     wsService.disconnect();
     unsubscribe();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('keydown', handleKeydown, { capture: true });
+    }
     if (inspectionTimer) clearInterval(inspectionTimer);
+    if (idleTimer) clearTimeout(idleTimer);
   });
 
   // ===== 状态 → 颜色（纯 UI 映射）=====
   function statusAccent() {
-    if (status === '在线')   return { dot: 'bg-neon-green', ring: 'bg-neon-green', chip: 'border-neon-green/30 bg-neon-green/10 text-neon-green' };
+    if (status === '移动')   return { dot: 'bg-neon-green', ring: 'bg-neon-green', chip: 'border-neon-green/30 bg-neon-green/10 text-neon-green' };
     if (status === '巡检中') return { dot: 'bg-neon-blue',  ring: 'bg-neon-blue',  chip: 'border-neon-blue/30 bg-neon-blue/10 text-neon-blue' };
     return                          { dot: 'bg-slate-400', ring: 'bg-slate-400', chip: 'border-white/10 bg-white/5 text-slate-400' };
   }
@@ -165,10 +239,7 @@
   <header class="flex items-center justify-between gap-4 mb-6">
     <div class="flex items-center gap-3 min-w-0">
       <div class="relative shrink-0">
-        <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-neon-cyan/25 to-neon-purple/25
-                    border border-white/10 flex items-center justify-center text-xl">
-          🤖
-        </div>
+        <img src="/logo.png" alt="Go2 智能巡检" class="w-11 h-11 rounded-xl object-cover" />
         <span class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full {accent.dot} animate-glow-pulse"></span>
       </div>
       <div class="min-w-0">
@@ -187,13 +258,6 @@
         <span class="w-1.5 h-1.5 rounded-full bg-neon-green animate-glow-pulse"></span>
         WS LINK
       </span>
-      <span class="chip {accent.chip}">
-        <span class="relative flex w-2 h-2">
-          <span class="absolute inset-0 rounded-full {accent.ring} animate-pulse-ring"></span>
-          <span class="relative w-2 h-2 rounded-full {accent.dot}"></span>
-        </span>
-        {status}
-      </span>
     </div>
   </header>
 
@@ -209,7 +273,7 @@
         >
           <span class="text-base leading-none">{tab.icon}</span>
           <span>{tab.label}</span>
-          {#if tab.key === 'log' && $logStore.length > 0}
+          {#if tab.key === 'overview' && $logStore.length > 0}
             <span class="ml-1 px-1.5 py-0.5 text-[10px] rounded-full
                          bg-neon-cyan/20 text-neon-cyan font-mono">
               {$logStore.length}
@@ -225,82 +289,80 @@
     {#key activeTab}
       <div class="animate-tab-in">
 
-        <!-- 总览：把状态数据传给展示组件，组件本身不发消息 -->
+        <!-- 总览：状态数据传给展示组件 + 日志列表 -->
         {#if activeTab === 'overview'}
-          <StatusPanel
-            {status}
-            {battery}
-            {task}
-            progress={inspectionProgress}
-            step={inspectionStep}
-            running={inspectionRunning}
-          />
+          <div class="flex flex-col gap-4">
+            <StatusPanel
+              {status}
+              {battery}
+              progress={inspectionProgress}
+              step={inspectionStep}
+              running={inspectionRunning}
+            />
 
-        <!-- 视频：内部只有 HTTP 视频流 URL，不是 WS -->
-        {:else if activeTab === 'video'}
-          <VideoStream />
-
-        <!-- 控制：按钮回调 → sendCommand() → wsService.send() ★通信发送 -->
-        {:else if activeTab === 'control'}
-          <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-            <div class="card card-hover lg:col-span-2 p-5">
-              <div class="flex items-center justify-between mb-4">
+            <div class="card p-5">
+              <div class="flex items-center justify-between mb-3">
                 <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
-                  🎮 运动控制
+                  📋 巡检日志
                 </h2>
-                <span class="chip">DIRECTION</span>
+                <span class="chip">{$logStore.length} ENTRIES</span>
               </div>
-
-              <div class="flex flex-col items-center gap-2 py-2">
-                <button type="button" onclick={() => sendCommand('forward')} class="ctrl-btn ctrl-blue w-20 h-14">⬆ 前进</button>
-                <div class="flex gap-2">
-                  <button type="button" onclick={() => sendCommand('left')}  class="ctrl-btn ctrl-blue w-20 h-14">⬅ 左转</button>
-                  <button type="button" onclick={() => sendCommand('stop')}  class="ctrl-btn ctrl-red  w-20 h-14">⏹ 停止</button>
-                  <button type="button" onclick={() => sendCommand('right')} class="ctrl-btn ctrl-blue w-20 h-14">➡ 右转</button>
-                </div>
-                <button type="button" onclick={() => sendCommand('backward')} class="ctrl-btn ctrl-blue w-20 h-14">⬇ 后退</button>
-              </div>
-            </div>
-
-            <div class="card card-hover p-5 flex flex-col gap-3">
-              <div class="flex items-center justify-between">
-                <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
-                  ⚙️ 动作 / 任务
-                </h2>
-                <span class="chip">ACTION</span>
-              </div>
-
-              <div class="flex flex-wrap gap-2">
-                <button type="button" onclick={() => sendCommand('standup')} class="ctrl-chip">🧍 站立</button>
-                <button type="button" onclick={() => sendCommand('sit')}     class="ctrl-chip">🪑 坐下</button>
-                <button type="button" onclick={emergencyStop}               class="ctrl-chip ctrl-chip-danger">⛔ 紧急停止</button>
-              </div>
-
-              <button
-                type="button"
-                onclick={startInspection}
-                disabled={inspectionRunning}
-                class="mt-auto w-full py-3 rounded-xl text-sm font-semibold transition-all duration-300
-                  {inspectionRunning
-                    ? 'bg-ink-600 text-slate-500 cursor-not-allowed'
-                    : 'bg-gradient-to-r from-neon-green/90 to-neon-cyan/90 text-ink-900 hover:shadow-glow-green hover:-translate-y-0.5 active:translate-y-0'}"
-              >
-                {inspectionRunning ? '⏳ 巡检执行中...' : '🚀 开始巡检'}
-              </button>
+              <LogViewer />
             </div>
           </div>
 
-        <!-- 日志：LogViewer 内部只订阅 logStore，不发送任何消息 -->
-        {:else if activeTab === 'log'}
-          <div class="card p-5">
-            <div class="flex items-center justify-between mb-3">
-              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
-                📋 巡检日志
-              </h2>
-              <span class="chip">{$logStore.length} ENTRIES</span>
+        <!-- 操控：视频流 + 运动/动作控制 -->
+        {:else if activeTab === 'control'}
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <VideoStream />
+
+            <div class="flex flex-col gap-4">
+              <div class="card card-hover p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
+                    🎮 运动控制
+                  </h2>
+                  <span class="chip">WASD / 方向键</span>
+                </div>
+
+                <div class="flex flex-col items-center gap-2 py-2">
+                  <button type="button" onclick={() => sendCommand('forward')} class="ctrl-btn ctrl-blue w-20 h-14">⬆ 前进</button>
+                  <div class="flex gap-2">
+                    <button type="button" onclick={() => sendCommand('left')}  class="ctrl-btn ctrl-blue w-20 h-14">⬅ 左转</button>
+                    <button type="button" onclick={() => sendCommand('stop')}  class="ctrl-btn ctrl-red  w-20 h-14">⏹ 停止</button>
+                    <button type="button" onclick={() => sendCommand('right')} class="ctrl-btn ctrl-blue w-20 h-14">➡ 右转</button>
+                  </div>
+                  <button type="button" onclick={() => sendCommand('backward')} class="ctrl-btn ctrl-blue w-20 h-14">⬇ 后退</button>
+                </div>
+              </div>
+
+              <div class="card card-hover p-5 flex flex-col gap-3">
+                <div class="flex items-center justify-between">
+                  <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
+                    ⚙️ 动作 / 任务
+                  </h2>
+                  <span class="chip">ACTION</span>
+                </div>
+
+                <div class="flex flex-wrap gap-2">
+                  <button type="button" onclick={() => sendCommand('standup')} class="ctrl-chip">🧍 站立</button>
+                  <button type="button" onclick={() => sendCommand('sit')}     class="ctrl-chip">🪑 坐下</button>
+                  <button type="button" onclick={emergencyStop}               class="ctrl-chip ctrl-chip-danger">⛔ 紧急停止</button>
+                </div>
+
+                <button
+                  type="button"
+                  onclick={startInspection}
+                  disabled={inspectionRunning}
+                  class="mt-auto w-full py-3 rounded-xl text-sm font-semibold transition-all duration-300
+                    {inspectionRunning
+                      ? 'bg-ink-600 text-slate-500 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-neon-green/90 to-neon-cyan/90 text-ink-900 hover:shadow-glow-green hover:-translate-y-0.5 active:translate-y-0'}"
+                >
+                  {inspectionRunning ? '⏳ 巡检执行中...' : '🚀 开始巡检'}
+                </button>
+              </div>
             </div>
-            <LogViewer />
           </div>
         {/if}
 
