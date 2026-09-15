@@ -1,40 +1,55 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  // ⚠️ 以下三个 import 涉及通信/状态，逻辑未改，仅用于读取和发送
+
+  // ============================================================
+  // ⚠️ 通信相关 import —— 以下逻辑全程未改
+  // ============================================================
   import { robotStore } from '$lib/stores/robot';        // 机器人状态 store（WS 推送写入）
   import { logStore } from '$lib/stores/log';            // 日志 store（WS 推送写入）
   import { wsService } from '$lib/services/websocket';   // ★ WebSocket 服务（连接/发送/断开）
-  // 纯展示组件，不含通信
+
+  // ============================================================
+  // 纯展示组件（内部不碰网络）
+  // ============================================================
   import LogViewer from '$lib/components/LogViewer.svelte';
   import StatusPanel from '$lib/components/StatusPanel.svelte';
   import VideoStream from '$lib/components/VideoStream.svelte';
 
-  // ===== 响应式状态（Svelte 5）=====
-  // 这些值来自 robotStore 订阅，不是自己产生的
+  // ============================================================
+  // 响应式状态（Svelte 5）
+  // 这些值来源于 robotStore 订阅，不是组件自己产生的
+  // ============================================================
   let status = $state('待机');
   let battery = $state(85);
 
-  // ===== 巡检状态（本地 UI 状态，不涉及通信）=====
-  let inspectionRunning = $state(false);
-  let inspectionProgress = $state(0);
-  let inspectionStep = $state('');
-  let inspectionTimer: any = null;
-  let idleTimer: any = null;   // 30 秒无操控自动回到待机的定时器
+  // ============================================================
+  // 巡检状态（纯本地 UI 状态，不涉及网络）
+  // ============================================================
+  let inspectionRunning = $state(false);   // 是否正在巡检
+  let inspectionProgress = $state(0);      // 巡检进度 0-100
+  let inspectionStep = $state('');         // 当前巡检步骤文字
+  let inspectionTimer: any = null;         // 巡检模拟定时器
+  let idleTimer: any = null;               // 30 秒无操控自动回到待机的定时器
 
-  // ===== 键盘控制视觉反馈状态 =====
+  // ============================================================
+  // 键盘控制视觉反馈状态
+  // ============================================================
   let activeDirection = $state('');   // 当前按下的方向（forward/backward/left/right/stop），松开后清空
 
-  // 节流：100ms 内最多发送一条移动/停止指令，避免高频 WebSocket 消息
+  // ============================================================
+  // 节流：100ms 内最多发一条移动/停止指令，避免高频 WebSocket 消息
+  // ============================================================
   let lastWsSendTime = 0;
   let wsThrottleTimer: any = null;
   let pendingKeyboardCmd: string | null = null;
 
   // 键位 → 指令映射（空格在 resolveKeyCmd 中单独处理）
+  // 同时支持 WASD 和方向键
   const KEY_CMD: Record<string, string> = {
-    w: 'forward', arrowup: 'forward',
-    s: 'backward', arrowdown: 'backward',
-    a: 'left', arrowleft: 'left',
-    d: 'right', arrowright: 'right'
+    w: 'forward',  arrowup:    'forward',
+    s: 'backward', arrowdown:  'backward',
+    a: 'left',     arrowleft:  'left',
+    d: 'right',    arrowright: 'right'
   };
 
   function resolveKeyCmd(eventKey: string): string {
@@ -43,7 +58,9 @@
     return KEY_CMD[key] ?? '';
   }
 
-  // ===== 标签页状态（纯 UI，不涉及通信）=====
+  // ============================================================
+  // 标签页状态（纯 UI，不涉及通信）
+  // ============================================================
   type TabKey = 'overview' | 'control';
   let activeTab: TabKey = $state('overview');
   const tabs: { key: TabKey; label: string; icon: string }[] = [
@@ -51,14 +68,19 @@
     { key: 'control',  label: '操控', icon: '🎮' }
   ];
 
-  // ===== 订阅 robotStore（接收 WS 推送的状态）=====
-  // ⚠️ 通信接收端：WS 收到 status_update 后写入 robotStore，这里再同步到本地变量
+  // ============================================================
+  // 订阅 robotStore
+  // ⚠️ 通信接收端：WS 收到 status_update 后写入 robotStore，
+  //    这里再同步到本地变量，供模板渲染
+  // ============================================================
   const unsubscribe = robotStore.subscribe((value) => {
     status = value.status;
     battery = value.battery;
   });
 
-  // ===== 30 秒无操控自动回到待机 =====
+  // ============================================================
+  // 30 秒无操控自动回到待机
+  // ============================================================
   function setMoving() {
     status = '移动';
     clearIdle();
@@ -75,9 +97,10 @@
     }
   }
 
-  // ===== 发送控制指令 =====
-  // ★ 通信发送端：把指令通过 wsService 发出去，逻辑与原版完全一致
-  // 实际发送一条指令（WS + 状态更新），供鼠标点击和键盘共用
+  // ============================================================
+  // 实际发送一条指令（WS + 本地状态），鼠标点击和键盘共用
+  // ★ 通信发送端：把指令通过 wsService 发出去
+  // ============================================================
   function emitCommand(cmd: string) {
     wsService.send({ type: 'command', data: { cmd } });
 
@@ -90,12 +113,16 @@
     }
   }
 
+  // 鼠标点击入口，加一行日志方便调试
   function sendCommand(cmd: string) {
     console.log('📩 指令:', cmd);
     emitCommand(cmd);
   }
 
-  // ===== 键盘指令节流（100ms 内最多发送一条，合并为最后一条）=====
+  // ============================================================
+  // 键盘指令节流
+  // 100ms 窗口内只发最后一条，避免长按方向键狂发消息
+  // ============================================================
   function sendKeyboardCommand(cmd: string) {
     const now = Date.now();
     pendingKeyboardCmd = cmd;
@@ -116,10 +143,15 @@
     emitCommand(cmd);
   }
 
-  // ===== 键盘控制（WASD / 方向键 / 空格）=====
+  // ============================================================
+  // 键盘按下
+  // ⚠️ 注意：这里【不再写日志】，避免高频日志更新卡住主线程
+  //    从而保证标签切换始终流畅
+  // ============================================================
   function handleKeydown(event: KeyboardEvent) {
     const target = event.target as HTMLElement | null;
     const tag = target?.tagName?.toLowerCase();
+
     // 忽略输入框、文本域、下拉选择或可编辑元素，避免干扰用户输入
     if (target && (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable)) {
       return;
@@ -128,11 +160,11 @@
     const cmd = resolveKeyCmd(event.key);
     if (!cmd) return;
 
-    // 拦截默认行为（页面滚动 / 焦点移动），避免按键触发标签页切换
+    // 拦截默认行为（页面滚动 / 焦点移动）
     event.preventDefault();
     event.stopPropagation();
 
-    // 按住不放产生的自动重复事件直接忽略，避免高频触发造成卡顿
+    // 按住不放产生的自动重复事件直接忽略，避免高频触发
     if (event.repeat) return;
 
     // 视觉反馈：记录当前按下的方向（keyup 时清空）
@@ -140,19 +172,11 @@
 
     // 节流发送 WebSocket 指令
     sendKeyboardCommand(cmd);
-
-    // 记录反馈：写入总览日志（限制条数，避免日志无限增长拖慢渲染）
-    const labels: Record<string, string> = {
-      forward: '前进', backward: '后退', left: '左转', right: '右转', stop: '停止'
-    };
-    const name = labels[cmd] ?? cmd;
-    const time = new Date().toLocaleTimeString();
-    logStore.update(logs => [
-      { time, level: 'info' as const, message: `⌨️ 键盘控制：${name} (${cmd})` },
-      ...logs
-    ].slice(0, 200));
   }
 
+  // ============================================================
+  // 键盘松开 → 清除视觉高亮
+  // ============================================================
   function handleKeyup(event: KeyboardEvent) {
     const cmd = resolveKeyCmd(event.key);
     if (cmd && cmd === activeDirection) {
@@ -160,7 +184,9 @@
     }
   }
 
-  // ===== 开始巡检 =====
+  // ============================================================
+  // 开始巡检
+  // ============================================================
   function startInspection() {
     if (inspectionRunning) return;
 
@@ -174,14 +200,18 @@
     inspectionRunning = true;
     inspectionProgress = 0;
     inspectionStep = '初始化巡检...';
+
     // 写本地日志 store（LogViewer 订阅它）
+    // slice(0, 200) 限制条数，避免日志无限增长拖慢渲染
     logStore.update(logs => [
       { time: new Date().toLocaleTimeString(), level: 'info', message: '🚀 开始巡检任务' },
       ...logs
-    ]);
+    ].slice(0, 200));
   }
 
-  // ===== 本地模拟巡检（纯本地，不发消息）=====
+  // ============================================================
+  // 本地模拟巡检（纯本地，不发消息）
+  // ============================================================
   function startLocalSimulation() {
     const steps = [
       { progress: 10, step: '前往设备区 A' },
@@ -196,6 +226,7 @@
     if (inspectionTimer) clearInterval(inspectionTimer);
 
     inspectionTimer = setInterval(() => {
+      // 全部步骤完成
       if (index >= steps.length) {
         inspectionRunning = false;
         inspectionProgress = 100;
@@ -205,7 +236,7 @@
         logStore.update(logs => [
           { time: new Date().toLocaleTimeString(), level: 'success', message: '✅ 巡检任务完成，共发现 1 处异常' },
           ...logs
-        ]);
+        ].slice(0, 200));
         clearInterval(inspectionTimer);
         inspectionTimer = null;
         return;
@@ -218,26 +249,29 @@
       logStore.update(logs => [
         { time: new Date().toLocaleTimeString(), level: 'info', message: `🔄 ${step.step}...` },
         ...logs
-      ]);
+      ].slice(0, 200));
 
+      // 随机插入异常事件
       if (index === 3 && Math.random() > 0.5) {
         logStore.update(logs => [
           { time: new Date().toLocaleTimeString(), level: 'error', message: '🔥 警告：发现火焰！' },
           ...logs
-        ]);
+        ].slice(0, 200));
       }
       if (index === 1 && Math.random() > 0.7) {
         logStore.update(logs => [
           { time: new Date().toLocaleTimeString(), level: 'warning', message: '⚠️ 仪表读数异常（压力超限）' },
           ...logs
-        ]);
+        ].slice(0, 200));
       }
 
       index++;
     }, 2000);
   }
 
-  // ===== 紧急停止 =====
+  // ============================================================
+  // 紧急停止
+  // ============================================================
   function emergencyStop() {
     // ★ 通信发送端：发送急停指令
     sendCommand('emergency_stop');
@@ -251,16 +285,21 @@
     inspectionStep = '⛔ 已紧急停止';
     status = '待机';
     clearIdle();
+
     logStore.update(logs => [
       { time: new Date().toLocaleTimeString(), level: 'error', message: '⛔ 紧急停止触发，巡检中断' },
       ...logs
-    ]);
+    ].slice(0, 200));
   }
 
-  // ===== 生命周期 =====
+  // ============================================================
+  // 生命周期
+  // ============================================================
   onMount(() => {
     // ★ 通信入口：页面挂载时建立 WebSocket 连接
     wsService.connect();
+
+    // 绑定键盘监听（SSR 阶段没有 window，需要判断）
     if (typeof window !== 'undefined') {
       window.addEventListener('keydown', handleKeydown, { capture: true });
       window.addEventListener('keyup', handleKeyup);
@@ -271,17 +310,21 @@
     // ★ 通信出口：页面卸载时断开 WebSocket + 取消订阅 + 清定时器 + 移除键盘监听
     wsService.disconnect();
     unsubscribe();
+
     if (typeof window !== 'undefined') {
       window.removeEventListener('keydown', handleKeydown, { capture: true });
       window.removeEventListener('keyup', handleKeyup);
     }
+
     if (inspectionTimer) clearInterval(inspectionTimer);
     if (idleTimer) clearTimeout(idleTimer);
     if (wsThrottleTimer) clearTimeout(wsThrottleTimer);
     activeDirection = '';
   });
 
-  // ===== 状态 → 颜色（纯 UI 映射）=====
+  // ============================================================
+  // 状态 → 颜色（纯 UI 映射）
+  // ============================================================
   function statusAccent() {
     if (status === '移动')   return { dot: 'bg-neon-green', ring: 'bg-neon-green', chip: 'border-neon-green/30 bg-neon-green/10 text-neon-green' };
     if (status === '巡检中') return { dot: 'bg-neon-blue',  ring: 'bg-neon-blue',  chip: 'border-neon-blue/30 bg-neon-blue/10 text-neon-blue' };
@@ -292,11 +335,12 @@
 
 <div class="page-enter max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
 
-  <!-- ===== 顶部标题（纯展示）===== -->
+  <!-- ============ 顶部标题（纯展示） ============ -->
   <header class="flex items-center justify-between gap-4 mb-6">
     <div class="flex items-center gap-3 min-w-0">
       <div class="relative shrink-0">
         <img src="/logo.png" alt="Go2 智能巡检" class="w-11 h-11 rounded-xl object-cover" />
+        <!-- 状态指示点：跟随 status 变色 -->
         <span class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full {accent.dot} animate-glow-pulse"></span>
       </div>
       <div class="min-w-0">
@@ -310,7 +354,7 @@
     </div>
 
     <div class="flex items-center gap-2">
-      <!-- 这里只是静态显示 WS 字样，没有实际连接判断 -->
+      <!-- 静态显示 WS LINK，没有实际连接状态判断 -->
       <span class="hidden sm:inline-flex chip">
         <span class="w-1.5 h-1.5 rounded-full bg-neon-green animate-glow-pulse"></span>
         WS LINK
@@ -318,7 +362,7 @@
     </div>
   </header>
 
-  <!-- ===== 标签导航（纯 UI，只切 activeTab）===== -->
+  <!-- ============ 标签导航（纯 UI，只切 activeTab） ============ -->
   <nav class="mb-5">
     <div class="flex gap-1.5 p-1.5 rounded-2xl bg-ink-800/60 border border-white/5
                 backdrop-blur-xl overflow-x-auto scrollbar-thin">
@@ -330,6 +374,7 @@
         >
           <span class="text-base leading-none">{tab.icon}</span>
           <span>{tab.label}</span>
+          <!-- 总览标签上显示日志条数徽章 -->
           {#if tab.key === 'overview' && $logStore.length > 0}
             <span class="ml-1 px-1.5 py-0.5 text-[10px] rounded-full
                          bg-neon-cyan/20 text-neon-cyan font-mono">
@@ -341,129 +386,141 @@
     </div>
   </nav>
 
-  <!-- ===== 标签内容 ===== -->
+  <!-- ============ 标签内容 ============ -->
+  <!-- ⚠️ 这里去掉了 {#key activeTab}，避免每次切换都销毁重建 VideoStream / LogViewer -->
   <div class="relative">
-    {#key activeTab}
-      <div class="animate-tab-in">
+    <div class="animate-tab-in">
 
-        <!-- 总览：状态数据传给展示组件 + 日志列表 -->
-        {#if activeTab === 'overview'}
-          <div class="flex flex-col gap-4">
-            <StatusPanel
-              {status}
-              {battery}
-              progress={inspectionProgress}
-              step={inspectionStep}
-              running={inspectionRunning}
-            />
+      <!-- ===== 总览：状态面板 + 日志列表 ===== -->
+      {#if activeTab === 'overview'}
+        <div class="flex flex-col gap-4">
+          <StatusPanel
+            {status}
+            {battery}
+            progress={inspectionProgress}
+            step={inspectionStep}
+            running={inspectionRunning}
+          />
 
-            <div class="card p-5">
-              <div class="flex items-center justify-between mb-3">
-                <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
-                  📋 巡检日志
-                </h2>
-                <span class="chip">{$logStore.length} ENTRIES</span>
-              </div>
-              <LogViewer />
+          <div class="card p-5">
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
+                📋 巡检日志
+              </h2>
+              <span class="chip">{$logStore.length} ENTRIES</span>
             </div>
+            <LogViewer />
           </div>
+        </div>
 
-        <!-- 操控：视频流 + 运动/动作控制 -->
-        {:else if activeTab === 'control'}
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <VideoStream />
+      <!-- ===== 操控：视频流 + 运动/动作控制 ===== -->
+      {:else if activeTab === 'control'}
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <VideoStream />
 
-            <div class="flex flex-col gap-4">
-              <div class="card card-hover p-5">
-                <div class="flex items-center justify-between mb-4">
-                  <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
-                    🎮 运动控制
-                  </h2>
-                  <span class="chip">WASD / 方向键</span>
-                </div>
-
-                <div class="flex flex-col items-center gap-2 py-2">
-                  <button
-                    type="button"
-                    onclick={() => sendCommand('forward')}
-                    class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'forward' ? 'is-pressed' : ''}"
-                  >⬆ 前进</button>
-                  <div class="flex gap-2">
-                    <button
-                      type="button"
-                      onclick={() => sendCommand('left')}
-                      class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'left' ? 'is-pressed' : ''}"
-                    >⬅ 左转</button>
-                    <button
-                      type="button"
-                      onclick={() => sendCommand('stop')}
-                      class="ctrl-btn ctrl-red w-20 h-14 {activeDirection === 'stop' ? 'is-pressed' : ''}"
-                    >⏹ 停止</button>
-                    <button
-                      type="button"
-                      onclick={() => sendCommand('right')}
-                      class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'right' ? 'is-pressed' : ''}"
-                    >➡ 右转</button>
-                  </div>
-                  <button
-                    type="button"
-                    onclick={() => sendCommand('backward')}
-                    class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'backward' ? 'is-pressed' : ''}"
-                  >⬇ 后退</button>
-                </div>
+          <div class="flex flex-col gap-4">
+            <!-- 运动方向控制 -->
+            <div class="card card-hover p-5">
+              <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
+                  🎮 运动控制
+                </h2>
+                <span class="chip">WASD / 方向键</span>
               </div>
 
-              <div class="card card-hover p-5 flex flex-col gap-3">
-                <div class="flex items-center justify-between">
-                  <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
-                    ⚙️ 动作 / 任务
-                  </h2>
-                  <span class="chip">ACTION</span>
-                </div>
+              <div class="flex flex-col items-center gap-2 py-2">
+                <button
+                  type="button"
+                  onclick={() => sendCommand('forward')}
+                  class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'forward' ? 'is-pressed' : ''}"
+                >⬆ 前进</button>
 
-                <div class="flex flex-wrap gap-2">
-                  <button type="button" onclick={() => sendCommand('standup')} class="ctrl-chip">🧍 站立</button>
-                  <button type="button" onclick={() => sendCommand('sit')}     class="ctrl-chip">🪑 坐下</button>
-                  <button type="button" onclick={emergencyStop}               class="ctrl-chip ctrl-chip-danger">⛔ 紧急停止</button>
+                <div class="flex gap-2">
+                  <button
+                    type="button"
+                    onclick={() => sendCommand('left')}
+                    class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'left' ? 'is-pressed' : ''}"
+                  >⬅ 左转</button>
+                  <button
+                    type="button"
+                    onclick={() => sendCommand('stop')}
+                    class="ctrl-btn ctrl-red w-20 h-14 {activeDirection === 'stop' ? 'is-pressed' : ''}"
+                  >⏹ 停止</button>
+                  <button
+                    type="button"
+                    onclick={() => sendCommand('right')}
+                    class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'right' ? 'is-pressed' : ''}"
+                  >➡ 右转</button>
                 </div>
 
                 <button
                   type="button"
-                  onclick={startInspection}
-                  disabled={inspectionRunning}
-                  class="mt-auto w-full py-3 rounded-xl text-sm font-semibold transition-all duration-300
-                    {inspectionRunning
-                      ? 'bg-ink-600 text-slate-500 cursor-not-allowed'
-                      : 'bg-gradient-to-r from-neon-green/90 to-neon-cyan/90 text-ink-900 hover:shadow-glow-green hover:-translate-y-0.5 active:translate-y-0'}"
-                >
-                  {inspectionRunning ? '⏳ 巡检执行中...' : '🚀 开始巡检'}
-                </button>
+                  onclick={() => sendCommand('backward')}
+                  class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'backward' ? 'is-pressed' : ''}"
+                >⬇ 后退</button>
               </div>
             </div>
-          </div>
-        {/if}
 
-      </div>
-    {/key}
+            <!-- 姿态 / 任务控制 -->
+            <div class="card card-hover p-5 flex flex-col gap-3">
+              <div class="flex items-center justify-between">
+                <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
+                  ⚙️ 动作 / 任务
+                </h2>
+                <span class="chip">ACTION</span>
+              </div>
+
+              <div class="flex flex-wrap gap-2">
+                <button type="button" onclick={() => sendCommand('standup')} class="ctrl-chip">🧍 站立</button>
+                <button type="button" onclick={() => sendCommand('sit')}     class="ctrl-chip">🪑 坐下</button>
+                <button type="button" onclick={emergencyStop}               class="ctrl-chip ctrl-chip-danger">⛔ 紧急停止</button>
+              </div>
+
+              <!-- 开始巡检 -->
+              <button
+                type="button"
+                onclick={startInspection}
+                disabled={inspectionRunning}
+                class="mt-auto w-full py-3 rounded-xl text-sm font-semibold transition-all duration-300
+                  {inspectionRunning
+                    ? 'bg-ink-600 text-slate-500 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-neon-green/90 to-neon-cyan/90 text-ink-900 hover:shadow-glow-green hover:-translate-y-0.5 active:translate-y-0'}"
+              >
+                {inspectionRunning ? '⏳ 巡检执行中...' : '🚀 开始巡检'}
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+    </div>
   </div>
 </div>
 
 <style>
-  /* 纯样式，无通信 */
+  /* ============ 纯样式，无通信 ============ */
+
+  /* 控制按钮基础 */
   .ctrl-btn {
     @apply rounded-xl text-sm font-semibold transition-all duration-200
            border flex items-center justify-center select-none;
   }
+
+  /* 蓝色按钮：前进/后退/左右转 */
   .ctrl-blue {
     @apply bg-neon-blue/10 border-neon-blue/25 text-neon-blue
            hover:bg-neon-blue/20 hover:shadow-glow-blue hover:-translate-y-0.5
            active:translate-y-0 active:scale-95;
   }
+
+  /* 红色按钮：停止 */
   .ctrl-red {
     @apply bg-neon-red/10 border-neon-red/25 text-neon-red
            hover:bg-neon-red/20 hover:shadow-glow-red hover:-translate-y-0.5
            active:translate-y-0 active:scale-95;
   }
+
+  /* 键盘按下时的视觉高亮 */
   .ctrl-btn.is-pressed {
     @apply scale-105;
   }
@@ -473,6 +530,8 @@
   .ctrl-red.is-pressed {
     @apply ring-2 ring-neon-red/70 bg-neon-red/30 shadow-glow-red;
   }
+
+  /* 小芯片按钮（站立/坐下/急停） */
   .ctrl-chip {
     @apply px-3.5 py-1.5 rounded-lg text-xs font-medium
            bg-white/5 border border-white/10 text-slate-300
