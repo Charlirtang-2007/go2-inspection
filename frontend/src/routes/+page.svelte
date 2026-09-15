@@ -21,6 +21,28 @@
   let inspectionTimer: any = null;
   let idleTimer: any = null;   // 30 秒无操控自动回到待机的定时器
 
+  // ===== 键盘控制视觉反馈状态 =====
+  let activeDirection = $state('');   // 当前按下的方向（forward/backward/left/right/stop），松开后清空
+
+  // 节流：100ms 内最多发送一条移动/停止指令，避免高频 WebSocket 消息
+  let lastWsSendTime = 0;
+  let wsThrottleTimer: any = null;
+  let pendingKeyboardCmd: string | null = null;
+
+  // 键位 → 指令映射（空格在 resolveKeyCmd 中单独处理）
+  const KEY_CMD: Record<string, string> = {
+    w: 'forward', arrowup: 'forward',
+    s: 'backward', arrowdown: 'backward',
+    a: 'left', arrowleft: 'left',
+    d: 'right', arrowright: 'right'
+  };
+
+  function resolveKeyCmd(eventKey: string): string {
+    const key = eventKey.toLowerCase();
+    if (key === ' ' || key === 'spacebar') return 'stop';
+    return KEY_CMD[key] ?? '';
+  }
+
   // ===== 标签页状态（纯 UI，不涉及通信）=====
   type TabKey = 'overview' | 'control';
   let activeTab: TabKey = $state('overview');
@@ -55,8 +77,8 @@
 
   // ===== 发送控制指令 =====
   // ★ 通信发送端：把指令通过 wsService 发出去，逻辑与原版完全一致
-  function sendCommand(cmd: string) {
-    console.log('📩 指令:', cmd);
+  // 实际发送一条指令（WS + 状态更新），供鼠标点击和键盘共用
+  function emitCommand(cmd: string) {
     wsService.send({ type: 'command', data: { cmd } });
 
     // 根据指令更新状态显示：运动→移动，停止/站立/坐下→待机
@@ -68,6 +90,32 @@
     }
   }
 
+  function sendCommand(cmd: string) {
+    console.log('📩 指令:', cmd);
+    emitCommand(cmd);
+  }
+
+  // ===== 键盘指令节流（100ms 内最多发送一条，合并为最后一条）=====
+  function sendKeyboardCommand(cmd: string) {
+    const now = Date.now();
+    pendingKeyboardCmd = cmd;
+    if (now - lastWsSendTime >= 100) {
+      flushKeyboardCommand();
+    } else if (wsThrottleTimer == null) {
+      wsThrottleTimer = setTimeout(flushKeyboardCommand, 100 - (now - lastWsSendTime));
+    }
+  }
+
+  function flushKeyboardCommand() {
+    wsThrottleTimer = null;
+    if (pendingKeyboardCmd == null) return;
+    const cmd = pendingKeyboardCmd;
+    pendingKeyboardCmd = null;
+    lastWsSendTime = Date.now();
+    console.log('📩 指令:', cmd);
+    emitCommand(cmd);
+  }
+
   // ===== 键盘控制（WASD / 方向键 / 空格）=====
   function handleKeydown(event: KeyboardEvent) {
     const target = event.target as HTMLElement | null;
@@ -77,35 +125,38 @@
       return;
     }
 
-    const keyMap: Record<string, string> = {
-      w: 'forward',
-      arrowup: 'forward',
-      s: 'backward',
-      arrowdown: 'backward',
-      a: 'left',
-      arrowleft: 'left',
-      d: 'right',
-      arrowright: 'right'
+    const cmd = resolveKeyCmd(event.key);
+    if (!cmd) return;
+
+    // 拦截默认行为（页面滚动 / 焦点移动），避免按键触发标签页切换
+    event.preventDefault();
+    event.stopPropagation();
+
+    // 按住不放产生的自动重复事件直接忽略，避免高频触发造成卡顿
+    if (event.repeat) return;
+
+    // 视觉反馈：记录当前按下的方向（keyup 时清空）
+    activeDirection = cmd;
+
+    // 节流发送 WebSocket 指令
+    sendKeyboardCommand(cmd);
+
+    // 记录反馈：写入总览日志（限制条数，避免日志无限增长拖慢渲染）
+    const labels: Record<string, string> = {
+      forward: '前进', backward: '后退', left: '左转', right: '右转', stop: '停止'
     };
+    const name = labels[cmd] ?? cmd;
+    const time = new Date().toLocaleTimeString();
+    logStore.update(logs => [
+      { time, level: 'info' as const, message: `⌨️ 键盘控制：${name} (${cmd})` },
+      ...logs
+    ].slice(0, 200));
+  }
 
-    const key = event.key.toLowerCase();
-    const cmd = key === ' ' ? 'stop' : keyMap[key];
-    if (cmd) {
-      // 拦截默认行为（页面滚动 / 焦点移动），避免按键触发标签页切换
-      event.preventDefault();
-      event.stopPropagation();
-      sendCommand(cmd);
-
-      // 记录反馈：写入总览日志 + 操控页最近指令
-      const labels: Record<string, string> = {
-        forward: '前进', backward: '后退', left: '左转', right: '右转', stop: '停止'
-      };
-      const name = labels[cmd] ?? cmd;
-      const time = new Date().toLocaleTimeString();
-      logStore.update(logs => [
-        { time, level: 'info', message: `⌨️ 键盘控制：${name} (${cmd})` },
-        ...logs
-      ]);
+  function handleKeyup(event: KeyboardEvent) {
+    const cmd = resolveKeyCmd(event.key);
+    if (cmd && cmd === activeDirection) {
+      activeDirection = '';
     }
   }
 
@@ -210,7 +261,10 @@
   onMount(() => {
     // ★ 通信入口：页面挂载时建立 WebSocket 连接
     wsService.connect();
-    window.addEventListener('keydown', handleKeydown, { capture: true });
+    if (typeof window !== 'undefined') {
+      window.addEventListener('keydown', handleKeydown, { capture: true });
+      window.addEventListener('keyup', handleKeyup);
+    }
   });
 
   onDestroy(() => {
@@ -219,9 +273,12 @@
     unsubscribe();
     if (typeof window !== 'undefined') {
       window.removeEventListener('keydown', handleKeydown, { capture: true });
+      window.removeEventListener('keyup', handleKeyup);
     }
     if (inspectionTimer) clearInterval(inspectionTimer);
     if (idleTimer) clearTimeout(idleTimer);
+    if (wsThrottleTimer) clearTimeout(wsThrottleTimer);
+    activeDirection = '';
   });
 
   // ===== 状态 → 颜色（纯 UI 映射）=====
@@ -326,13 +383,33 @@
                 </div>
 
                 <div class="flex flex-col items-center gap-2 py-2">
-                  <button type="button" onclick={() => sendCommand('forward')} class="ctrl-btn ctrl-blue w-20 h-14">⬆ 前进</button>
+                  <button
+                    type="button"
+                    onclick={() => sendCommand('forward')}
+                    class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'forward' ? 'is-pressed' : ''}"
+                  >⬆ 前进</button>
                   <div class="flex gap-2">
-                    <button type="button" onclick={() => sendCommand('left')}  class="ctrl-btn ctrl-blue w-20 h-14">⬅ 左转</button>
-                    <button type="button" onclick={() => sendCommand('stop')}  class="ctrl-btn ctrl-red  w-20 h-14">⏹ 停止</button>
-                    <button type="button" onclick={() => sendCommand('right')} class="ctrl-btn ctrl-blue w-20 h-14">➡ 右转</button>
+                    <button
+                      type="button"
+                      onclick={() => sendCommand('left')}
+                      class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'left' ? 'is-pressed' : ''}"
+                    >⬅ 左转</button>
+                    <button
+                      type="button"
+                      onclick={() => sendCommand('stop')}
+                      class="ctrl-btn ctrl-red w-20 h-14 {activeDirection === 'stop' ? 'is-pressed' : ''}"
+                    >⏹ 停止</button>
+                    <button
+                      type="button"
+                      onclick={() => sendCommand('right')}
+                      class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'right' ? 'is-pressed' : ''}"
+                    >➡ 右转</button>
                   </div>
-                  <button type="button" onclick={() => sendCommand('backward')} class="ctrl-btn ctrl-blue w-20 h-14">⬇ 后退</button>
+                  <button
+                    type="button"
+                    onclick={() => sendCommand('backward')}
+                    class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'backward' ? 'is-pressed' : ''}"
+                  >⬇ 后退</button>
                 </div>
               </div>
 
@@ -386,6 +463,15 @@
     @apply bg-neon-red/10 border-neon-red/25 text-neon-red
            hover:bg-neon-red/20 hover:shadow-glow-red hover:-translate-y-0.5
            active:translate-y-0 active:scale-95;
+  }
+  .ctrl-btn.is-pressed {
+    @apply scale-105;
+  }
+  .ctrl-blue.is-pressed {
+    @apply ring-2 ring-neon-blue/70 bg-neon-blue/30 shadow-glow-blue;
+  }
+  .ctrl-red.is-pressed {
+    @apply ring-2 ring-neon-red/70 bg-neon-red/30 shadow-glow-red;
   }
   .ctrl-chip {
     @apply px-3.5 py-1.5 rounded-lg text-xs font-medium
