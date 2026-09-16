@@ -6,3 +6,4 @@ pydantic-settings
 opencv-python
 opencv-contrib-python
 numpy
+zeroconf>=0.130.0
