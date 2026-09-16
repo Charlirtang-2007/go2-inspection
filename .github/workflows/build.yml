@@ -5,14 +5,14 @@ on:
     branches:
       - develop
       - main
-      - windows        # ← 新增：支持 windows 分支触发
+      - windows        # 支持 windows 分支触发
     tags:
       - 'v*'
   pull_request:
     branches:
       - develop
       - main
-      - windows        # ← 新增
+      - windows
   workflow_dispatch:  # 允许手动触发
 
 jobs:
@@ -43,6 +43,11 @@ jobs:
       - name: Install frontend dependencies
         working-directory: ./frontend
         run: npm install
+
+      # ========== 临时安装 Tauri CLI（不修改 package.json） ==========
+      - name: Install Tauri CLI
+        working-directory: ./frontend
+        run: npm install -D @tauri-apps/cli
 
       # ========== 构建 Tauri 应用 ==========
       - name: Build Tauri App
