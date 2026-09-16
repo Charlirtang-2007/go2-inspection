@@ -5,12 +5,14 @@ on:
     branches:
       - develop
       - main
+      - windows        # ← 新增：支持 windows 分支触发
     tags:
       - 'v*'
   pull_request:
     branches:
       - develop
       - main
+      - windows        # ← 新增
   workflow_dispatch:  # 允许手动触发
 
 jobs:
