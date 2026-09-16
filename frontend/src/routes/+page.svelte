@@ -139,6 +139,14 @@
     emitCommand(cmd);
   }
 
+  // 控制盘键盘可达性：聚焦后用 Enter / 空格触发（配合 role="button" + tabindex）
+  function handlePadKey(cmd: string, event: KeyboardEvent) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      sendCommand(cmd);
+    }
+  }
+
   // ============================================================
   // 键盘指令节流
   // 100ms 窗口内只发最后一条，避免长按方向键狂发消息
@@ -352,6 +360,48 @@
     return                          { dot: 'bg-slate-400', ring: 'bg-slate-400', chip: 'border-white/10 bg-white/5 text-slate-400' };
   }
   const accent = $derived(statusAccent());
+
+  // ============================================================
+  // 环形扇形控制盘（SVG 几何计算）
+  // ============================================================
+  const PAD_C = 110;   // 圆心
+  const R_OUT = 104;   // 外半径
+  const R_IN = 46;     // 内半径（环绕中心停止按钮）
+  const GAP = 2.5;     // 扇形之间的角度间隙（度）
+  const SEG_HALF = 45 - GAP / 2;
+
+  function polar(cx: number, cy: number, r: number, deg: number) {
+    const a = (deg * Math.PI) / 180;
+    return { x: +(cx + r * Math.cos(a)).toFixed(2), y: +(cy + r * Math.sin(a)).toFixed(2) };
+  }
+
+  function sectorPath(startDeg: number, endDeg: number) {
+    const p1 = polar(PAD_C, PAD_C, R_OUT, startDeg);
+    const p2 = polar(PAD_C, PAD_C, R_OUT, endDeg);
+    const p3 = polar(PAD_C, PAD_C, R_IN, endDeg);
+    const p4 = polar(PAD_C, PAD_C, R_IN, startDeg);
+    return `M ${p1.x} ${p1.y} A ${R_OUT} ${R_OUT} 0 0 1 ${p2.x} ${p2.y} L ${p3.x} ${p3.y} A ${R_IN} ${R_IN} 0 0 0 ${p4.x} ${p4.y} Z`;
+  }
+
+  // 顺时针：上(前进) → 右(右转) → 下(后退) → 左(左转)
+  const sectors = [
+    { cmd: 'forward',  label: '前进', icon: '↑', center: -90, vert: true  },
+    { cmd: 'right',    label: '右转', icon: '→', center: 0,   vert: false },
+    { cmd: 'backward', label: '后退', icon: '↓', center: 90,  vert: true  },
+    { cmd: 'left',     label: '左转', icon: '←', center: 180, vert: false }
+  ].map((s) => {
+    const mid = (R_OUT + R_IN) / 2;
+    const lp = polar(PAD_C, PAD_C, mid, s.center);
+    return {
+      cmd: s.cmd,
+      label: s.label,
+      icon: s.icon,
+      vert: s.vert,
+      d: sectorPath(s.center - SEG_HALF, s.center + SEG_HALF),
+      lx: lp.x,
+      ly: lp.y
+    };
+  });
 </script>
 
 <div class="page-enter max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -450,36 +500,38 @@
                 <span class="chip">WASD / 方向键</span>
               </div>
 
-              <div class="flex flex-col items-center gap-2 py-2">
-                <button
-                  type="button"
-                  onclick={() => sendCommand('forward')}
-                  class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'forward' ? 'is-pressed' : ''}"
-                >⬆ 前进</button>
+              <div class="control-pad">
+                <svg viewBox="0 0 220 220" class="w-full h-full" aria-label="运动控制盘">
+                  <!-- 四个扇形：上前进 / 右右转 / 下后退 / 左左转 -->
+                  {#each sectors as s (s.cmd)}
+                    <g
+                      class="seg-group {s.vert ? 'seg-v' : 'seg-h'} {activeDirection === s.cmd ? 'is-pressed' : ''}"
+                      onclick={() => sendCommand(s.cmd)}
+                      onkeydown={(e) => handlePadKey(s.cmd, e)}
+                      role="button"
+                      tabindex="0"
+                      aria-label={s.label}
+                    >
+                      <path class="seg" d={s.d} />
+                      <text x={s.lx} y={s.ly - 8} text-anchor="middle" class="seg-icon">{s.icon}</text>
+                      <text x={s.lx} y={s.ly + 12} text-anchor="middle" class="seg-label">{s.label}</text>
+                    </g>
+                  {/each}
 
-                <div class="flex gap-2">
-                  <button
-                    type="button"
-                    onclick={() => sendCommand('left')}
-                    class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'left' ? 'is-pressed' : ''}"
-                  >⬅ 左转</button>
-                  <button
-                    type="button"
+                  <!-- 中心停止按钮 -->
+                  <g
+                    class="stop-btn {activeDirection === 'stop' ? 'is-pressed' : ''}"
                     onclick={() => sendCommand('stop')}
-                    class="ctrl-btn ctrl-red w-20 h-14 {activeDirection === 'stop' ? 'is-pressed' : ''}"
-                  >⏹ 停止</button>
-                  <button
-                    type="button"
-                    onclick={() => sendCommand('right')}
-                    class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'right' ? 'is-pressed' : ''}"
-                  >➡ 右转</button>
-                </div>
-
-                <button
-                  type="button"
-                  onclick={() => sendCommand('backward')}
-                  class="ctrl-btn ctrl-blue w-20 h-14 {activeDirection === 'backward' ? 'is-pressed' : ''}"
-                >⬇ 后退</button>
+                    onkeydown={(e) => handlePadKey('stop', e)}
+                    role="button"
+                    tabindex="0"
+                    aria-label="停止"
+                  >
+                    <circle cx="110" cy="110" r="42" class="stop-face" fill="#ef4444" />
+                    <text x="110" y="107" text-anchor="middle" class="stop-icon">⏹</text>
+                    <text x="110" y="130" text-anchor="middle" class="stop-label">停止</text>
+                  </g>
+                </svg>
               </div>
             </div>
 
@@ -522,35 +574,81 @@
 <style>
   /* ============ 纯样式，无通信 ============ */
 
-  /* 控制按钮基础 */
-  .ctrl-btn {
-    @apply rounded-xl text-sm font-semibold transition-all duration-200
-           border flex items-center justify-center select-none;
+  /* ============ 环形扇形控制盘（SVG） ============ */
+  .control-pad {
+    width: 220px;
+    height: 220px;
+    margin: 0 auto;
+    user-select: none;
+  }
+  .control-pad svg { display: block; }
+
+  .seg-group,
+  .stop-btn {
+    cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .seg-group:focus-visible .seg,
+  .stop-btn:focus-visible .stop-face {
+    filter: brightness(1.12);
   }
 
-  /* 蓝色按钮：前进/后退/左右转 */
-  .ctrl-blue {
-    @apply bg-neon-blue/10 border-neon-blue/25 text-neon-blue
-           hover:bg-neon-blue/20 hover:shadow-glow-blue hover:-translate-y-0.5
-           active:translate-y-0 active:scale-95;
+  /* 扇形本体：上/下（前进/后退）蓝，左/右（左转/右转）青 */
+  .seg {
+    transition: fill 0.18s ease, filter 0.18s ease;
   }
+  .seg-v .seg { fill: rgba(96, 165, 250, 0.14); }
+  .seg-h .seg { fill: rgba(34, 211, 238, 0.14); }
 
-  /* 红色按钮：停止 */
-  .ctrl-red {
-    @apply bg-neon-red/10 border-neon-red/25 text-neon-red
-           hover:bg-neon-red/20 hover:shadow-glow-red hover:-translate-y-0.5
-           active:translate-y-0 active:scale-95;
-  }
+  /* 悬停变亮 */
+  .seg-v:hover .seg { fill: rgba(96, 165, 250, 0.3); }
+  .seg-h:hover .seg { fill: rgba(34, 211, 238, 0.3); }
+  .seg-group:hover .seg-icon,
+  .seg-group:hover .seg-label { filter: brightness(1.25); }
 
-  /* 键盘按下时的视觉高亮 */
-  .ctrl-btn.is-pressed {
-    @apply scale-105;
+  /* 图标与文字 */
+  .seg-icon,
+  .seg-label {
+    pointer-events: none;
+    font-family: inherit;
   }
-  .ctrl-blue.is-pressed {
-    @apply ring-2 ring-neon-blue/70 bg-neon-blue/30 shadow-glow-blue;
+  .seg-icon { font-size: 22px; font-weight: 700; }
+  .seg-label { font-size: 11px; font-weight: 600; }
+  .seg-v .seg-icon { fill: #93c5fd; }
+  .seg-v .seg-label { fill: #60a5fa; }
+  .seg-h .seg-icon { fill: #67e8f9; }
+  .seg-h .seg-label { fill: #22d3ee; }
+
+  /* 键盘按下：发光 + 变亮 */
+  .seg-group.is-pressed .seg { filter: brightness(1.45) drop-shadow(0 0 10px rgba(147, 197, 253, 0.5)); }
+  .seg-group.is-pressed.seg-v .seg { fill: rgba(96, 165, 250, 0.42); }
+  .seg-group.is-pressed.seg-h .seg { fill: rgba(34, 211, 238, 0.42); }
+
+  /* 中心停止按钮：简洁扁平鲜艳红色圆形 */
+  .stop-btn {
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35));
   }
-  .ctrl-red.is-pressed {
-    @apply ring-2 ring-neon-red/70 bg-neon-red/30 shadow-glow-red;
+  .stop-face {
+    fill: #ef4444;
+    transition: filter 0.18s ease;
+  }
+  .stop-btn:hover .stop-face { filter: brightness(1.08); }
+  .stop-btn:active .stop-face,
+  .stop-btn.is-pressed .stop-face { filter: brightness(1.15); }
+
+  .stop-icon {
+    font-size: 18px;
+    fill: #ffffff;
+    pointer-events: none;
+    font-family: inherit;
+  }
+  .stop-label {
+    font-size: 12px;
+    font-weight: 700;
+    fill: #ffffff;
+    pointer-events: none;
+    font-family: inherit;
   }
 
   /* 小芯片按钮（站立/坐下/急停） */
