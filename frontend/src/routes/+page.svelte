@@ -23,6 +23,11 @@
   let battery = $state(85);
 
   // ============================================================
+  // ★ 视频流地址（由 wsService 连接成功后自动赋值）
+  // ============================================================
+  let videoUrl = $state('');
+
+  // ============================================================
   // 巡检状态（纯本地 UI 状态，不涉及网络）
   // ============================================================
   let inspectionRunning = $state(false);   // 是否正在巡检
@@ -76,6 +81,21 @@
   const unsubscribe = robotStore.subscribe((value) => {
     status = value.status;
     battery = value.battery;
+  });
+
+  // ============================================================
+  // ★ 订阅 WebSocket 连接状态
+  //    一旦连接成功，就获取后端地址，拼出视频流 URL
+  //    连接断开时清空 videoUrl，避免显示"死图"
+  // ============================================================
+  const unsubStatus = wsService.status.subscribe((s) => {
+    if (s === 'connected') {
+      const base = wsService.getBackendBase();
+      videoUrl = `${base}/api/camera/video?width=640&height=480`;
+      console.log('📷 视频流地址:', videoUrl);
+    } else {
+      videoUrl = '';
+    }
   });
 
   // ============================================================
@@ -310,6 +330,7 @@
     // ★ 通信出口：页面卸载时断开 WebSocket + 取消订阅 + 清定时器 + 移除键盘监听
     wsService.disconnect();
     unsubscribe();
+    unsubStatus();   // ★ 取消 WebSocket 状态订阅
 
     if (typeof window !== 'undefined') {
       window.removeEventListener('keydown', handleKeydown, { capture: true });
@@ -416,7 +437,8 @@
       <!-- ===== 操控：视频流 + 运动/动作控制 ===== -->
       {:else if activeTab === 'control'}
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <VideoStream />
+          <!-- ★ 把 videoUrl 传给 VideoStream，由它负责渲染画面 -->
+          <VideoStream {videoUrl} />
 
           <div class="flex flex-col gap-4">
             <!-- 运动方向控制 -->

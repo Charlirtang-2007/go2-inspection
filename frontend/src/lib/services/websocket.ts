@@ -1,44 +1,45 @@
 import { writable } from 'svelte/store';
-import { robotStore, type RobotStatus } from '$lib/stores/robot';
+import { robotStore } from '$lib/stores/robot';
 import { logStore } from '$lib/stores/log';
+import { discoverBackend } from '$lib/services/discovery';
 
 type WSMessage = {
-  type: 'status_update' | 'log' | 'command_ack';
-  data: any;
+  type: 'status_update' | 'log' | 'command_ack' | 'subscribed' | 'error';
+  data?: any;
+  topics?: string[];
+  message?: string;
 };
 
 class WebSocketService {
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
+  private backendBase: string = '';
   public status = writable<'connecting' | 'connected' | 'disconnected'>('disconnected');
 
-  private normalizeRobotStatus(payload: any): Partial<RobotStatus> {
-    if (!payload || typeof payload !== 'object') {
-      return {};
-    }
-
-    const resolvedStatus = payload.status ?? payload.current_state ?? '待命';
-    const resolvedTask = payload.current_task ?? payload.task ?? null;
-
-    return {
-      connected: payload.connected ?? true,
-      status: resolvedStatus,
-      battery: typeof payload.battery === 'number' ? payload.battery : 0,
-      mode: payload.mode ?? '手动',
-      current_task: resolvedTask,
-      current_state: payload.current_state ?? resolvedStatus
-    };
-  }
-
-  connect() {
+  async connect() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
-    this.ws = new WebSocket('ws://192.168.169.127:8000/ws'); // 记得改
+    // 发现后端
+    if (!this.backendBase) {
+      try {
+        this.backendBase = await discoverBackend();
+      } catch (e) {
+        console.error('❌ 无法发现后端:', e);
+        this.status.set('disconnected');
+        return;
+      }
+    }
+
+    const wsUrl = this.backendBase.replace(/^http/, 'ws') + '/ws';
+    console.log('🔌 连接WebSocket:', wsUrl);
+
+    this.ws = new WebSocket(wsUrl);
     this.status.set('connecting');
 
     this.ws.onopen = () => {
       console.log('✅ WebSocket 连接成功');
       this.status.set('connected');
+      this.send({ type: 'subscribe', topics: ['status', 'log', 'command'] });
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -46,10 +47,12 @@ class WebSocketService {
     };
 
     this.ws.onclose = () => {
-      console.log('⚠️ WebSocket 断开，尝试重连...');
+      console.log('⚠️ WebSocket 断开，3秒后重连...');
       this.status.set('disconnected');
+      this.ws = null;
+      this.backendBase = ''; // 清空让重连时重新发现
       if (!this.reconnectTimer) {
-        this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+        this.reconnectTimer = window.setTimeout(() => this.connect(), 3000);
       }
     };
 
@@ -65,14 +68,29 @@ class WebSocketService {
 
   private handleMessage(msg: WSMessage) {
     switch (msg.type) {
-      case 'status_update':
-        robotStore.update((current) => ({
-          ...current,
-          ...this.normalizeRobotStatus(msg.data)
-        }));
+      case 'status_update': {
+        if (msg.data) robotStore.set(msg.data);
         break;
-      case 'log':
-        logStore.update(logs => [msg.data, ...logs].slice(0, 100));
+      }
+      case 'log': {
+        if (msg.data) logStore.update(logs => [msg.data, ...logs].slice(0, 100));
+        break;
+      }
+      case 'command_ack': {
+        if (!msg.data) break;
+        const level: 'success' | 'error' = msg.data.status === 'executed' ? 'success' : 'error';
+        logStore.update(logs => [{
+          time: new Date().toLocaleTimeString(),
+          level,
+          message: `指令 ${msg.data.cmd} ${msg.data.status === 'executed' ? '执行成功' : '执行失败'}`
+        }, ...logs].slice(0, 100));
+        break;
+      }
+      case 'subscribed':
+        console.log('✅ 已订阅:', msg.topics);
+        break;
+      case 'error':
+        console.error('❌ 服务端错误:', msg.message);
         break;
       default:
         console.log('未知消息类型:', msg);
@@ -87,6 +105,10 @@ class WebSocketService {
     }
   }
 
+  getBackendBase(): string {
+    return this.backendBase;
+  }
+
   disconnect() {
     if (this.ws) {
       this.ws.close();
@@ -96,6 +118,7 @@ class WebSocketService {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.backendBase = '';
   }
 }
 

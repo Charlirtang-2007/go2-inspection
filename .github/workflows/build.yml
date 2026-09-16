@@ -1,0 +1,98 @@
+name: Build Tauri App
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'ubuntu-22.04'
+            args: ''
+            label: 'linux'
+          - platform: 'windows-latest'
+            args: ''
+            label: 'windows'
+          # 如果需要在 macOS 上构建，取消注释
+          # - platform: 'macos-latest'
+          #   args: '--target aarch64-apple-darwin'
+          #   label: 'macos-arm'
+          # - platform: 'macos-latest'
+          #   args: '--target x86_64-apple-darwin'
+          #   label: 'macos-intel'
+
+    runs-on: ${{ matrix.platform }}
+    name: Build (${{ matrix.label }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ========== Node 环境 ==========
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ========== Rust 环境 ==========
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './frontend/src-tauri -> target'
+
+      # ========== Linux 系统依赖 ==========
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libxdo-dev \
+            libayatana-appindicator3-dev
+
+      # ========== 前端依赖安装 ==========
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm install
+
+      # ========== 构建 Tauri 应用 ==========
+      - name: Build Tauri App
+        working-directory: ./frontend
+        run: npx tauri build ${{ matrix.args }}
+        env:
+          # 如果是 macOS 构建，需要额外配置
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ========== 上传构建产物 ==========
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: go2-inspection-${{ matrix.label }}-${{ github.sha }}
+          path: |
+            frontend/src-tauri/target/release/bundle/
+            frontend/src-tauri/target/release/app
+          if-no-files-found: warn
+          retention-days: 30

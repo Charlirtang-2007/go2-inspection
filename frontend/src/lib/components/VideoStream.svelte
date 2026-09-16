@@ -1,64 +1,39 @@
 <script lang="ts">
-  // 后端地址（只填主机，不带路径） 记得改
-  const API_BASE = import.meta.env.VITE_API_BASE || 'http://192.168.169.127:8000';
-  const videoUrl = `${API_BASE}/api/camera/video?width=640&height=480`;
+  // ============================================================
+  // VideoStream 组件
+  // 职责：显示视频流画面 / 加载中提示
+  // 数据来源：父组件传入的 videoUrl
+  // ============================================================
 
-  let status = $state<'connecting' | 'connected' | 'error'>('connecting');
-
-  function handleLoad()  { status = 'connected'; }
-  function handleError() { status = 'error'; }
+  // 从父组件接收 videoUrl
+  let { videoUrl = '' } = $props();
 </script>
 
-<div class="card p-4">
-  <div class="flex items-center justify-between mb-3">
-    <div class="flex items-center gap-2">
-      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-[0.18em]">
-        📷 实时监控
-      </h2>
-      <span class="chip">
-        {status === 'connecting' ? '● 连接中' : status === 'connected' ? '● 已连接' : '● 连接失败'}
-      </span>
-    </div>
-
-    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono
-                 border border-neon-red/30 bg-neon-red/10 text-neon-red">
-      <span class="relative flex w-1.5 h-1.5">
-        <span class="absolute inset-0 rounded-full bg-neon-red animate-pulse-ring"></span>
-        <span class="relative w-1.5 h-1.5 rounded-full bg-neon-red"></span>
-      </span>
+<div class="card p-3 h-full flex flex-col">
+  <!-- 卡片头：标题 + LIVE 徽章 -->
+  <div class="flex items-center justify-between mb-2">
+    <span class="text-sm font-medium text-slate-300">📷 实时监控</span>
+    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs
+                 bg-neon-red/10 text-neon-red border border-neon-red/25">
+      <span class="w-1.5 h-1.5 rounded-full bg-neon-red animate-pulse"></span>
       LIVE
     </span>
   </div>
 
-  <div class="relative aspect-video rounded-xl overflow-hidden bg-ink-900
-              border border-white/5 shadow-glow-soft">
-    <!-- 扫描线 -->
-    <div class="pointer-events-none absolute inset-0 z-10">
-      <div class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-neon-cyan/60 to-transparent"></div>
-    </div>
-
-    {#if status === 'error'}
-      <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-400">
-        <span class="text-3xl">⚠️</span>
-        <span class="text-sm">视频流加载失败</span>
-        <button
-          type="button"
-          onclick={() => location.reload()}
-          class="px-4 py-1.5 rounded-lg text-xs font-medium
-                 bg-neon-blue/15 border border-neon-blue/30 text-neon-blue
-                 hover:bg-neon-blue/25 transition-colors"
-        >
-          重试
-        </button>
-      </div>
-    {:else}
+  <!-- 视频区域：有地址显示画面，无地址显示搜索提示 -->
+  <div class="aspect-video bg-ink-900 rounded-lg overflow-hidden flex items-center justify-center">
+    {#if videoUrl}
       <img
         src={videoUrl}
         alt="机器狗摄像头画面"
-        onload={handleLoad}
-        onerror={handleError}
         class="w-full h-full object-contain"
       />
+    {:else}
+      <div class="text-slate-500 text-sm text-center px-4">
+        <p class="text-2xl mb-2">🔍</p>
+        <p>正在搜索后端服务...</p>
+        <p class="text-xs mt-1 text-slate-600">请确保笔记本与AI机台在同一局域网</p>
+      </div>
     {/if}
   </div>
 </div>

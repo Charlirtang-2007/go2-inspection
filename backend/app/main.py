@@ -3,17 +3,32 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 import json
 import asyncio
 
 from app.routers import robot, camera, detection, route
 from app.utils.websocket_manager import manager
 from app.services.robot_factory import get_robot_service
+from app.utils.mdns_service import MDNSService 
+
+# ========== mDNS服务实例 ==========
+mdns = MDNSService(port=8000)
+
+# ========== 生命周期管理 ==========
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动时：注册mDNS广播
+    mdns.start()
+    yield
+    # 关闭时：停止广播
+    mdns.stop()
 
 app = FastAPI(
     title="Go2 巡检系统 API",
     version="2.0.0",
-    description="基于 FastAPI + WebSocket 的机器狗巡检系统"
+    description="基于 FastAPI + WebSocket 的机器狗巡检系统",
+    lifespan=lifespan,
 )
 
 # CORS 配置
@@ -54,6 +69,17 @@ async def execute_robot_command(cmd: str):
         return robot_service.stop_move()
     else:
         return {"success": False, "error": f"未知指令: {cmd}"}
+
+# 新增：提供mDNS发现信息的接口（备用）
+@app.get("/api/discovery")
+async def discovery():
+    """返回本服务的连接信息，前端也可通过此接口获取"""
+    return {
+        "service": "go2-inspection",
+        "ip": mdns.get_local_ip(),
+        "port": mdns.port,
+        "ws_url": f"ws://{mdns.get_local_ip()}:{mdns.port}/ws",
+    }
 
 
 # ========== WebSocket 端点 ==========
