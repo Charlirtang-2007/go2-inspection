@@ -40,6 +40,7 @@
   // 键盘控制视觉反馈状态
   // ============================================================
   let activeDirection = $state('');   // 当前按下的方向（forward/backward/left/right/stop），松开后清空
+  let stopRippleKey = $state(0);      // 停止按钮波纹重放计数：每次递增触发一次 ripple 动画
 
   // ============================================================
   // 节流：100ms 内最多发一条移动/停止指令，避免高频 WebSocket 消息
@@ -140,10 +141,17 @@
   }
 
   // 控制盘键盘可达性：聚焦后用 Enter / 空格触发（配合 role="button" + tabindex）
+  // 停止按钮：发送指令并触发一次波纹反馈（点击与键盘共用）
+  function stopCommand() {
+    sendCommand('stop');
+    stopRippleKey++;
+  }
+
   function handlePadKey(cmd: string, event: KeyboardEvent) {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      sendCommand(cmd);
+      if (cmd === 'stop') stopCommand();
+      else sendCommand(cmd);
     }
   }
 
@@ -200,6 +208,9 @@
 
     // 节流发送 WebSocket 指令
     sendKeyboardCommand(cmd);
+
+    // 停止指令额外触发波纹反馈
+    if (cmd === 'stop') stopRippleKey++;
   }
 
   // ============================================================
@@ -521,12 +532,17 @@
                   <!-- 中心停止按钮 -->
                   <g
                     class="stop-btn {activeDirection === 'stop' ? 'is-pressed' : ''}"
-                    onclick={() => sendCommand('stop')}
+                    onclick={stopCommand}
                     onkeydown={(e) => handlePadKey('stop', e)}
                     role="button"
                     tabindex="0"
                     aria-label="停止"
                   >
+                    {#if stopRippleKey > 0}
+                      {#key stopRippleKey}
+                        <circle cx="110" cy="110" r="42" class="stop-ripple" vector-effect="non-scaling-stroke" />
+                      {/key}
+                    {/if}
                     <circle cx="110" cy="110" r="42" class="stop-face" fill="#ef4444" />
                     <text x="110" y="107" text-anchor="middle" class="stop-icon">⏹</text>
                     <text x="110" y="130" text-anchor="middle" class="stop-label">停止</text>
@@ -625,17 +641,49 @@
   .seg-group.is-pressed.seg-v .seg { fill: rgba(96, 165, 250, 0.42); }
   .seg-group.is-pressed.seg-h .seg { fill: rgba(34, 211, 238, 0.42); }
 
-  /* 中心停止按钮：简洁扁平鲜艳红色圆形 */
+  /* 中心停止按钮：简洁扁平鲜艳红色圆形（无 3D 质感） */
   .stop-btn {
-    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35));
+    transform-box: view-box;
+    transform-origin: 110px 110px;
+    transition: transform 0.15s ease;
   }
   .stop-face {
     fill: #ef4444;
-    transition: filter 0.18s ease;
+    transition: filter 0.15s ease;
   }
-  .stop-btn:hover .stop-face { filter: brightness(1.08); }
+
+  /* 悬停：轻微放大 + 更亮 + 红色光晕 */
+  .stop-btn:hover {
+    transform: scale(1.08);
+  }
+  .stop-btn:hover .stop-face {
+    filter: brightness(1.1) drop-shadow(0 0 14px rgba(239, 68, 68, 0.85));
+  }
+
+  /* 按下 / 键盘停止：轻微缩小 + 颜色加深 + 更强光晕 */
+  .stop-btn:active,
+  .stop-btn.is-pressed {
+    transform: scale(0.92);
+  }
   .stop-btn:active .stop-face,
-  .stop-btn.is-pressed .stop-face { filter: brightness(1.15); }
+  .stop-btn.is-pressed .stop-face {
+    filter: brightness(0.88) saturate(1.25) drop-shadow(0 0 20px rgba(239, 68, 68, 0.95));
+  }
+
+  /* 波纹扩散光晕：半透明白色光圈，从中心向外扩散一圈 */
+  .stop-ripple {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.65);
+    stroke-width: 3;
+    pointer-events: none;
+    transform-box: view-box;
+    transform-origin: 110px 110px;
+    animation: stop-ripple 0.3s ease-out forwards;
+  }
+  @keyframes stop-ripple {
+    0%   { transform: scale(1);   opacity: 0.9; }
+    100% { transform: scale(2.4); opacity: 0; }
+  }
 
   .stop-icon {
     font-size: 18px;
@@ -659,7 +707,7 @@
            active:scale-95;
   }
   .ctrl-chip-danger {
-    @apply bg-neon-red/10 border-neon-red/30 text-neon-red
-           hover:bg-neon-red/20;
+    @apply bg-red-400/10 border-red-400/30 text-red-400
+           hover:bg-red-400/20;
   }
 </style>
