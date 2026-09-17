@@ -7,3 +7,5 @@ opencv-python
 opencv-contrib-python
 numpy
 zeroconf>=0.130.0
+httpx
+python-dotenv
