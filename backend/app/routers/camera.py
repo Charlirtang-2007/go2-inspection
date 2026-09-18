@@ -11,20 +11,14 @@
 # app/routers/camera.py
 
 from fastapi import APIRouter, Response, Query
-from app.services.camera_service import CameraService
+from app.services.camera_service import CameraService, get_shared_camera
 from typing import Optional
 from fastapi.responses import StreamingResponse
 router = APIRouter(prefix="/api/camera", tags=["camera"])
 
-# 全局摄像头服务实例（懒加载）
-_camera: Optional[CameraService] = None
-
+# 全局摄像头服务实例（懒加载，与录制/异常检测共享）
 def get_camera() -> CameraService:
-    global _camera
-    if _camera is None:
-        _camera = CameraService(camera_index=0)
-        _camera.start()
-    return _camera
+    return get_shared_camera()
 
 @router.get("/video")
 async def video_stream(

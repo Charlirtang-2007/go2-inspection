@@ -6,6 +6,7 @@
   // ============================================================
   import { robotStore } from '$lib/stores/robot';        // 机器人状态 store（WS 推送写入）
   import { logStore } from '$lib/stores/log';            // 日志 store（WS 推送写入）
+  import { inspectionStore, type InspectionState } from '$lib/stores/log';  // 巡检录制/下载状态
   import { wsService } from '$lib/services/websocket';   // ★ WebSocket 服务（连接/发送/断开）
 
   // ============================================================
@@ -21,6 +22,15 @@
   // ============================================================
   let status = $state('待机');
   let battery = $state(85);
+  let inspection = $state<InspectionState>({ recording: false, inspection_id: '', video_url: '', log_url: '' });
+
+  // ============================================================
+  // 本地巡检记录兜底：点击「开始巡检」时立即生成本地 ID，
+  // 避免后端尚未推送 inspection_id 时下载按钮一直处于禁用态。
+  // 后端推送真实 inspection_id 后会被覆盖（见 unsubInspection）。
+  // ============================================================
+  let inspectionId = $state('');
+  let inspectionFinished = $state(false);
 
   // ============================================================
   // ★ 视频流地址（由 wsService 连接成功后自动赋值）
@@ -29,6 +39,11 @@
 
   // ★ 兜底后端地址：当 WebSocket 未连接或未返回地址时，仍然尝试连接本机后端
   const DEFAULT_BACKEND = 'http://localhost:8000';
+
+  // 下载地址的 host：优先使用 WebSocket 发现到的后端地址，否则兜底 localhost
+  function downloadBase(): string {
+    return wsService.getBackendBase() || DEFAULT_BACKEND;
+  }
 
   // ============================================================
   // 巡检状态（纯本地 UI 状态，不涉及网络）
@@ -44,6 +59,18 @@
   // ============================================================
   let activeDirection = $state('');   // 当前按下的方向（forward/backward/left/right/stop），松开后清空
   let stopRippleKey = $state(0);      // 停止按钮波纹重放计数：每次递增触发一次 ripple 动画
+
+  // 下载提示（短暂显示，如“视频下载中...”）
+  let downloadNote = $state('');
+  let downloadNoteTimer: any = null;
+  function notifyDownload(msg: string) {
+    downloadNote = msg;
+    if (downloadNoteTimer) clearTimeout(downloadNoteTimer);
+    downloadNoteTimer = setTimeout(() => {
+      downloadNote = '';
+      downloadNoteTimer = null;
+    }, 3000);
+  }
 
   // ============================================================
   // 节流：100ms 内最多发一条移动/停止指令，避免高频 WebSocket 消息
@@ -85,6 +112,15 @@
   const unsubscribe = robotStore.subscribe((value) => {
     status = value.status;
     battery = value.battery;
+  });
+
+  // 巡检录制/下载状态（由后端 inspection_status 消息驱动）
+  const unsubInspection = inspectionStore.subscribe((v) => {
+    inspection = v;
+    // 后端推送真实 inspection_id 时覆盖本地兜底 ID，保证下载地址正确
+    if (v.inspection_id) {
+      inspectionId = v.inspection_id;
+    }
   });
 
   // ============================================================
@@ -237,6 +273,12 @@
     // ★ 通信发送端：通知后端开始巡检
     wsService.send({ type: 'command', data: { cmd: 'start_inspection' } });
 
+    // 生成本地巡检 ID（兜底）：后端推送真实 inspection_id 前，用它拼下载地址
+    const now = new Date();
+    const p = (n: number) => String(n).padStart(2, '0');
+    inspectionId = `inspection_${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}_${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+    inspectionFinished = false;
+
     startLocalSimulation(); // 本地模拟进度（不涉及通信）
 
     status = '巡检中';
@@ -273,10 +315,13 @@
       // 全部步骤完成
       if (index >= steps.length) {
         inspectionRunning = false;
+        inspectionFinished = true;
         inspectionProgress = 100;
         inspectionStep = '✅ 巡检完成！';
         status = '待机';
         clearIdle();
+        // 结束录制：通知后端停止录制并生成视频/日志文件
+        wsService.send({ type: 'command', data: { cmd: 'stop_inspection' } });
         logStore.update(logs => [
           { time: new Date().toLocaleTimeString(), level: 'success', message: '✅ 巡检任务完成，共发现 1 处异常' },
           ...logs
@@ -319,12 +364,15 @@
   function emergencyStop() {
     // ★ 通信发送端：发送急停指令
     sendCommand('emergency_stop');
+    // 若正在录制，也一并停止
+    wsService.send({ type: 'command', data: { cmd: 'stop_inspection' } });
 
     if (inspectionTimer) {
       clearInterval(inspectionTimer);
       inspectionTimer = null;
     }
     inspectionRunning = false;
+    inspectionFinished = true;
     inspectionProgress = 0;
     inspectionStep = '⛔ 已紧急停止';
     status = '待机';
@@ -355,6 +403,7 @@
     wsService.disconnect();
     unsubscribe();
     unsubStatus();   // ★ 取消 WebSocket 状态订阅
+    unsubInspection();
 
     if (typeof window !== 'undefined') {
       window.removeEventListener('keydown', handleKeydown, { capture: true });
@@ -583,6 +632,49 @@
               >
                 {inspectionRunning ? '⏳ 巡检执行中...' : '🚀 开始巡检'}
               </button>
+
+              <!-- 录制中指示 -->
+              {#if inspection.recording}
+                <div class="flex items-center justify-center gap-2 text-xs text-red-400 font-mono">
+                  <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                  正在录制巡检视频...
+                </div>
+              {/if}
+
+              <!-- 下载巡检产物：后端真实 url 优先，否则用本地 inspectionId 拼接兜底 -->
+              <div class="flex gap-2">
+                <a
+                  href={inspection.video_url || (inspectionId ? `${downloadBase()}/api/download/video/${inspectionId}` : '#')}
+                  download
+                  onclick={() => notifyDownload('⬇️ 视频下载中，请稍候...')}
+                  class="flex-1 py-2.5 rounded-xl text-sm font-medium text-center border border-neon-cyan/30 bg-neon-cyan/10 text-neon-cyan hover:bg-neon-cyan/20 transition-colors {inspection.video_url || inspectionId ? '' : 'opacity-50 cursor-not-allowed pointer-events-none'}"
+                  aria-disabled={!inspection.video_url && !inspectionId}
+                >
+                  📹 下载巡检视频
+                </a>
+
+                <a
+                  href={inspection.log_url || (inspectionId ? `${downloadBase()}/api/download/log/${inspectionId}` : '#')}
+                  download
+                  onclick={() => notifyDownload('⬇️ 日志下载中，请稍候...')}
+                  class="flex-1 py-2.5 rounded-xl text-sm font-medium text-center border border-neon-purple/30 bg-neon-purple/10 text-neon-purple hover:bg-neon-purple/20 transition-colors {inspection.log_url || inspectionId ? '' : 'opacity-50 cursor-not-allowed pointer-events-none'}"
+                  aria-disabled={!inspection.log_url && !inspectionId}
+                >
+                  📋 下载巡检日志
+                </a>
+              </div>
+
+              {#if downloadNote}
+                <p class="text-center text-xs text-slate-400 animate-pulse">{downloadNote}</p>
+              {:else if !inspectionId && !inspection.video_url && !inspection.log_url}
+                <p class="text-center text-xs text-slate-500">
+                  暂无巡检记录，点击「开始巡检」并在巡检结束后即可下载视频与日志。
+                </p>
+              {:else if !inspectionFinished}
+                <p class="text-center text-xs text-amber-300">巡检进行中，结束后即可下载。</p>
+              {:else}
+                <p class="text-center text-xs text-green-400">✅ 巡检已完成，可下载视频与日志。</p>
+              {/if}
             </div>
           </div>
         </div>

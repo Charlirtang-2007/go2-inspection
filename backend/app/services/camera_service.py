@@ -70,3 +70,16 @@ class CameraService:
     def get_frame_for_detection(self) -> Optional[np.ndarray]:
         """获取一帧用于检测"""
         return self.read_frame()
+
+
+# 共享摄像头单例：视频流（MJPEG）与录制/异常检测共用同一路摄像头，避免重复打开设备
+_shared_camera: Optional[CameraService] = None
+
+
+def get_shared_camera(camera_index: int = 0) -> CameraService:
+    """获取全局共享摄像头实例（懒加载并自动启动）"""
+    global _shared_camera
+    if _shared_camera is None:
+        _shared_camera = CameraService(camera_index)
+        _shared_camera.start()
+    return _shared_camera
