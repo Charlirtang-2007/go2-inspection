@@ -5,6 +5,7 @@ on:
     branches:
       - develop
       - main
+      - Archlinux
       - windows        # 支持 windows 分支触发
     tags:
       - 'v*'
@@ -13,6 +14,7 @@ on:
       - develop
       - main
       - windows
+      - Archlinux
   workflow_dispatch:  # 允许手动触发
 
 jobs:

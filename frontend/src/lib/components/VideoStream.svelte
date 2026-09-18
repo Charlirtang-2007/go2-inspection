@@ -4,13 +4,14 @@
   // 职责：显示视频流画面 / 加载中提示，并提供全屏、画中画
   // 数据来源：父组件传入的 videoUrl（MJPEG 流地址）
   // ============================================================
+  import FullscreenAlert from '$lib/components/FullscreenAlert.svelte';
   import { onMount, onDestroy } from 'svelte';
+  import { isFullscreen as globalFullscreen, alertStore } from '$lib/stores/alert';
   import type { WebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { anomalyStore, inspectionStore, formatTimestamp, type AnomalyEvent } from '$lib/stores/log';
 
   let { videoUrl = '' } = $props();
 
-  // 画中画降级小窗的 label（Tauri WebviewWindow）
   const PIP_LABEL = 'pip';
 
   // ---- 元素引用 ----
@@ -20,6 +21,7 @@
   // ---- 响应式状态 ----
   let isFullscreen = $state(false);
   let isPip = $state(false);
+<<<<<<< HEAD
   let pipAvailable = $state(false);     // 是否有可用画中画方案（Tauri 或浏览器 window.open）
   let streamReady = $state(false);      // 视频流是否已加载出有效帧
   let pipMessage = $state('');          // 用户可见的瞬时提示
@@ -32,13 +34,43 @@
 
   // ============================================================
   // 环境检测
+=======
+  let pipAvailable = $state(false);
+  let streamReady = $state(false);
+  let pipMessage = $state('');
+
+  // ---- 时间水印 ----
+  let currentTime = $state('');
+  let currentDate = $state('');
+  let timeTimer: number | null = null;
+
+  // ---- 画中画资源 ----
+  let pipStream: MediaStream | null = null;
+  let rafId: number | null = null;
+  let pipWindow: WebviewWindow | null = null;
+  let pipMessageTimer: number | null = null;
+
+  // ============================================================
+  // 时间水印：每秒更新
+  // ============================================================
+  function updateTime() {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+
+    currentTime = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    currentDate = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  }
+
+  // ============================================================
+  // 环境/能力检测
+>>>>>>> origin/Archlinux
   // ============================================================
   function isTauri(): boolean {
     return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   }
 
   // ============================================================
-  // 用户可见提示（自动消失）
+  // 用户可见提示
   // ============================================================
   function showPipMessage(msg: string) {
     pipMessage = msg;
@@ -70,19 +102,29 @@
       });
     } else if (el.webkitRequestFullscreen) {
       el.webkitRequestFullscreen();
-    } else {
-      console.warn('当前浏览器不支持全屏');
     }
   }
 
   function onFullscreenChange() {
+    const wasFullscreen = isFullscreen;
     isFullscreen = !!document.fullscreenElement;
+    globalFullscreen.set(isFullscreen);
+
+    // 从全屏 → 非全屏：视为用户"已知晓"，自动确认全屏来源的告警
+    if (wasFullscreen && !isFullscreen) {
+      alertStore.confirmAllBySource('fullscreen');
+      console.log('✅ 退出全屏，已自动确认全屏告警');
+    }
   }
 
   // ============================================================
+<<<<<<< HEAD
   // Tauri / WebView2：始终置顶、不占任务栏的独立小窗。
   // 直接把流地址作为页面打开会以“单张图”居中渲染，全屏时四周留黑边；
   // 这里把流包进一个铺满窗口、object-fit: cover 的 HTML，全屏可填满屏幕。
+=======
+  // 画中画相关（保持不变）
+>>>>>>> origin/Archlinux
   // ============================================================
   function buildPipHtml(): string {
     const src = String(videoUrl)
@@ -109,6 +151,7 @@
       object-fit: cover;
       display: block;
     }
+<<<<<<< HEAD
   </style>
 </head>
 <body>
@@ -144,6 +187,84 @@
   <\/script>
 </body>
 </html>`;
+=======
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    rafId = requestAnimationFrame(drawFrame);
+  }
+
+  function startNativePip() {
+    if (!canvasEl || !pipVideoEl || !imgEl) return;
+
+    if (typeof canvasEl.captureStream !== 'function') {
+      showPipMessage('当前环境不支持画中画');
+      return;
+    }
+
+    canvasEl.width = imgEl.naturalWidth || canvasEl.width || 640;
+    canvasEl.height = imgEl.naturalHeight || canvasEl.height || 480;
+    drawFrame();
+    if (rafId == null) rafId = requestAnimationFrame(drawFrame);
+
+    pipStream = canvasEl.captureStream(30);
+    pipVideoEl.srcObject = pipStream;
+    pipVideoEl.muted = true;
+    pipVideoEl.playsInline = true;
+
+    pipVideoEl.play().catch(() => {});
+
+    pipVideoEl
+      .requestPictureInPicture()
+      .then(() => {
+        isPip = true;
+        if (rafId == null) rafId = requestAnimationFrame(drawFrame);
+      })
+      .catch((e: unknown) => {
+        console.error('画中画启动失败:', e);
+        teardownPip();
+        showPipMessage(pipErrorMessage(e));
+      });
+  }
+
+  function pipErrorMessage(e: unknown): string {
+    const name = e instanceof DOMException ? e.name : '';
+    if (name === 'NotAllowedError') return '画中画需要用户手势触发，请重试';
+    if (name === 'NotSupportedError' || name === 'InvalidStateError') return '当前环境不支持画中画';
+    return '画中画启动失败';
+  }
+
+  async function openTauriPip() {
+    const { WebviewWindow: WW } = await import('@tauri-apps/api/webviewWindow');
+
+    const win = new WW(PIP_LABEL, {
+      url: videoUrl,
+      title: '画中画',
+      width: 660,
+      height: 540,
+      resizable: true,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      focus: true
+    });
+
+    pipWindow = win;
+
+    win.onCloseRequested(() => {
+      pipWindow = null;
+      isPip = false;
+    }).catch(() => {});
+
+    win.once('tauri://error', (e) => {
+      console.error('画中画窗口创建失败:', e);
+      pipWindow = null;
+      isPip = false;
+      showPipMessage('画中画窗口创建失败');
+    }).catch(() => {});
+
+    isPip = true;
+>>>>>>> origin/Archlinux
   }
 
   async function openTauriWindow(): Promise<boolean> {
@@ -346,18 +467,19 @@
     void closePip();
   }
 
-  // ============================================================
-  // 统一切换入口
-  // ============================================================
   async function togglePip() {
+<<<<<<< HEAD
     console.log('[PiP] 点击', { isTauri: isTauri(), streamReady, hasWindow: !!browserPipWindow });
 
     // 未就绪：给出明确提示，不静默失败
+=======
+>>>>>>> origin/Archlinux
     if (!streamReady) {
       showPipMessage('视频流未连接');
       return;
     }
 
+<<<<<<< HEAD
     // 已打开：关闭
     if (isPip) {
       await closePip();
@@ -367,11 +489,50 @@
     // 打开：按运行环境选择方案
     if (isTauri()) {
       await openTauriWindow();
+=======
+    if (isTauri()) {
+      await toggleTauriPip();
+      return;
+    }
+
+    if (isPip) {
+      await exitPip();
+>>>>>>> origin/Archlinux
     } else {
       openBrowserPip();
     }
   }
 
+<<<<<<< HEAD
+=======
+  async function exitPip() {
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      }
+    } catch (e) {
+      console.warn('退出画中画失败:', e);
+    }
+  }
+
+  function teardownPip() {
+    if (rafId != null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    if (pipStream) {
+      pipStream.getTracks().forEach((t) => t.stop());
+      pipStream = null;
+    }
+    if (pipVideoEl) pipVideoEl.srcObject = null;
+    isPip = false;
+  }
+
+  function onLeavePip() {
+    teardownPip();
+  }
+
+>>>>>>> origin/Archlinux
   // ============================================================
   // 生命周期
   // ============================================================
@@ -379,6 +540,7 @@
     document.addEventListener('fullscreenchange', onFullscreenChange);
     window.addEventListener('keydown', handlePipKeydown);
 
+<<<<<<< HEAD
     // 能力检测：Tauri 用独立小窗，普通浏览器用 window.open
     pipAvailable = isTauri() || typeof window.open === 'function';
 
@@ -395,6 +557,13 @@
     inspectionUnsub = inspectionStore.subscribe((s) => {
       recording = !!s.recording;
     });
+=======
+    pipAvailable = isTauri() || supportsNativePip();
+
+    // 启动时间水印更新
+    updateTime();
+    timeTimer = window.setInterval(updateTime, 1000);
+>>>>>>> origin/Archlinux
   });
 
   onDestroy(() => {
@@ -423,7 +592,18 @@
       pipMessageTimer = null;
     }
 
+<<<<<<< HEAD
     // 关闭 Tauri 降级小窗
+=======
+    // 清理时间水印定时器
+    if (timeTimer !== null) {
+      clearInterval(timeTimer);
+      timeTimer = null;
+    }
+
+    teardownPip();
+
+>>>>>>> origin/Archlinux
     if (pipWindow) pipWindow.close().catch(() => {});
 
     // 关闭浏览器小窗并清理轮询定时器
@@ -438,7 +618,6 @@
     }
   });
 
-  // 视频地址变化时重置就绪标记；真实帧到达后由 img 的 onload 置回 true
   $effect(() => {
     if (!videoUrl) streamReady = false;
   });
@@ -564,8 +743,8 @@
 
 <div class="card p-3 flex flex-col video-card" bind:this={cardEl}>
 
-  <!-- 卡片头：标题 + LIVE 徽章 + 全屏/画中画按钮 -->
-  <div class="flex items-center justify-between mb-2">
+  <!-- 卡片头 -->
+  <div class="flex items-center justify-between mb-2 video-card-header">
     <span class="text-sm font-medium text-slate-300">📷 实时监控</span>
 
     <div class="flex items-center gap-2">
@@ -594,7 +773,11 @@
         {/if}
       </button>
 
+<<<<<<< HEAD
       <!-- 画中画（有可用方案时显示；未就绪时点击给出提示） -->
+=======
+      <!-- 画中画 -->
+>>>>>>> origin/Archlinux
       {#if pipAvailable}
         <button
           type="button"
@@ -612,8 +795,13 @@
     </div>
   </div>
 
+<<<<<<< HEAD
   <!-- 视频区域：有地址显示画面，无地址显示搜索提示 -->
   <div class="video-area relative flex-1 min-h-0 bg-ink-900 rounded-lg overflow-hidden flex items-center justify-center">
+=======
+  <!-- 视频区域 -->
+  <div class="video-area relative aspect-video bg-ink-900 rounded-lg overflow-hidden flex items-center justify-center">
+>>>>>>> origin/Archlinux
     {#if videoUrl}
       <img
         bind:this={imgEl}
@@ -631,8 +819,42 @@
       </div>
     {/if}
 
+    <!-- ============================================================ -->
+    <!-- 时间水印（左上角） -->
+    <!-- ============================================================ -->
+    {#if videoUrl}
+      <div class="absolute top-2 left-2 z-40 pointer-events-none
+                  px-2.5 py-1 rounded-md bg-black/60 backdrop-blur-sm
+                  border border-white/10">
+        <div class="text-white font-mono text-xs leading-tight tracking-wider">
+          {currentTime}
+        </div>
+        <div class="text-slate-400 font-mono text-[10px] leading-tight">
+          {currentDate}
+        </div>
+      </div>
+    {/if}
+
+    <!-- ============================================================ -->
+    <!-- 录制中标识（右下角） -->
+    <!-- ============================================================ -->
+    {#if videoUrl}
+      <div class="absolute bottom-2 right-2 z-40 pointer-events-none
+                  px-2.5 py-1 rounded-md bg-red-600/85 backdrop-blur-sm
+                  border border-red-400/40
+                  flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+        <span class="text-white text-xs font-semibold tracking-wider">
+          REC 录制中
+        </span>
+      </div>
+    {/if}
+
+    <!-- 全屏告警弹幕 + 频闪 -->
+    <FullscreenAlert active={isFullscreen} />
+
     {#if pipMessage}
-      <div class="absolute bottom-2 inset-x-0 flex justify-center px-3 pointer-events-none">
+      <div class="absolute bottom-2 inset-x-0 flex justify-center px-3 pointer-events-none z-[70]">
         <span class="px-3 py-1.5 rounded-lg bg-ink-900/90 border border-white/10 text-xs text-amber-300 shadow-lg">
           {pipMessage}
         </span>
@@ -752,7 +974,6 @@
 </div>
 
 <style>
-  /* 全屏时让卡片铺满屏幕，视频区域尽量填充并保持宽高比 */
   .video-card:fullscreen {
     width: 100vw;
     height: 100vh;
@@ -766,6 +987,7 @@
     min-height: 0;
   }
 
+<<<<<<< HEAD
   /* 异常报警：红色边框与光晕频闪 */
   .alert-flash {
     border: 3px solid #ef4444;
@@ -786,5 +1008,17 @@
   @keyframes bullet-in {
     from { opacity: 0; transform: translateX(24px); }
     to   { opacity: 1; transform: translateX(0); }
+=======
+  /* 全屏时时间水印和 REC 标识放大一些，方便远处看清楚 */
+  .video-card:fullscreen .video-area :global(.absolute.top-2.left-2) {
+    top: 1.5rem;
+    left: 1.5rem;
+    padding: 0.75rem 1.25rem;
+  }
+  .video-card:fullscreen .video-area :global(.absolute.bottom-2.right-2) {
+    bottom: 1.5rem;
+    right: 1.5rem;
+    padding: 0.75rem 1.25rem;
+>>>>>>> origin/Archlinux
   }
 </style>
