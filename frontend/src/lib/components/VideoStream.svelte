@@ -15,36 +15,25 @@
   // ---- 元素引用 ----
   let cardEl = $state<HTMLDivElement | null>(null);
   let imgEl = $state<HTMLImageElement | null>(null);
-  let canvasEl = $state<HTMLCanvasElement | null>(null);
-  let pipVideoEl = $state<HTMLVideoElement | null>(null);
 
   // ---- 响应式状态 ----
   let isFullscreen = $state(false);
   let isPip = $state(false);
-  let pipAvailable = $state(false);     // 是否有任一可用画中画方案（原生或 Tauri 降级）
+  let pipAvailable = $state(false);     // 是否有可用画中画方案（Tauri 或浏览器 window.open）
   let streamReady = $state(false);      // 视频流是否已加载出有效帧
   let pipMessage = $state('');          // 用户可见的瞬时提示
 
   // ---- 画中画资源 ----
-  let pipStream: MediaStream | null = null;
-  let rafId: number | null = null;
   let pipWindow: WebviewWindow | null = null;   // Tauri 降级窗口引用
+  let browserPipWindow: Window | null = null;   // 浏览器 window.open 小窗引用
+  let browserPipTimer: number | null = null;    // 轮询检测浏览器小窗是否已关闭
   let pipMessageTimer: number | null = null;
 
   // ============================================================
-  // 环境/能力检测
+  // 环境检测
   // ============================================================
   function isTauri(): boolean {
     return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-  }
-
-  function supportsNativePip(): boolean {
-    return (
-      typeof document !== 'undefined' &&
-      typeof HTMLVideoElement !== 'undefined' &&
-      document.pictureInPictureEnabled === true &&
-      typeof HTMLVideoElement.prototype.requestPictureInPicture === 'function'
-    );
   }
 
   // ============================================================
@@ -90,181 +79,195 @@
   }
 
   // ============================================================
-  // 画中画（MJPEG 走 img → 隐藏 canvas.captureStream → 隐藏 video）
+  // Tauri / WebView2：始终置顶、不占任务栏的独立小窗。
+  // 直接把流地址作为页面打开会以“单张图”居中渲染，全屏时四周留黑边；
+  // 这里把流包进一个铺满窗口、object-fit: cover 的 HTML，全屏可填满屏幕。
   // ============================================================
-  function drawFrame() {
-    const img = imgEl;
-    const canvas = canvasEl;
-    if (!img || !canvas) {
-      rafId = null;
-      return;
+  function buildPipHtml(): string {
+    const src = String(videoUrl)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;');
+    return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>画中画</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
     }
-
-    const w = img.naturalWidth || canvas.width || 640;
-    const h = img.naturalHeight || canvas.height || 480;
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
+    img {
+      width: 100vw;
+      height: 100vh;
+      object-fit: cover;
+      display: block;
     }
-
-    const ctx = canvas.getContext('2d');
-    if (ctx) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-    rafId = requestAnimationFrame(drawFrame);
+  </style>
+</head>
+<body>
+  <img src="${src}" alt="机器狗监控画面">
+</body>
+</html>`;
   }
 
-  function startNativePip() {
-    if (!canvasEl || !pipVideoEl || !imgEl) return;
+  async function openTauriWindow(): Promise<boolean> {
+    try {
+      // 动态加载，避免在纯浏览器环境下引入 Tauri 模块
+      const { WebviewWindow: WW } = await import('@tauri-apps/api/webviewWindow');
+      const pipUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(buildPipHtml());
 
-    if (typeof canvasEl.captureStream !== 'function') {
-      console.warn('当前环境不支持 canvas.captureStream');
-      showPipMessage('当前环境不支持画中画');
-      return;
-    }
-
-    // 先画一帧并启动绘制循环，确保捕获流已有内容
-    canvasEl.width = imgEl.naturalWidth || canvasEl.width || 640;
-    canvasEl.height = imgEl.naturalHeight || canvasEl.height || 480;
-    drawFrame();
-    if (rafId == null) rafId = requestAnimationFrame(drawFrame);
-
-    pipStream = canvasEl.captureStream(30);
-    pipVideoEl.srcObject = pipStream;
-    pipVideoEl.muted = true;
-    pipVideoEl.playsInline = true;
-
-    // 触发播放（fire-and-forget），不 await，确保 requestPictureInPicture
-    // 仍在用户手势（click）的同步执行流内调用，避免 NotAllowedError。
-    pipVideoEl.play().catch(() => {});
-
-    pipVideoEl
-      .requestPictureInPicture()
-      .then(() => {
-        isPip = true;
-        if (rafId == null) rafId = requestAnimationFrame(drawFrame);
-      })
-      .catch((e: unknown) => {
-        console.error('画中画启动失败:', e);
-        teardownPip();
-        showPipMessage(pipErrorMessage(e));
+      const win = new WW(PIP_LABEL, {
+        url: pipUrl,
+        title: '画中画',
+        width: 660,
+        height: 540,
+        resizable: true,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        focus: true
       });
-  }
 
-  function pipErrorMessage(e: unknown): string {
-    const name = e instanceof DOMException ? e.name : '';
-    if (name === 'NotAllowedError') return '画中画需要用户手势触发，请重试';
-    if (name === 'NotSupportedError' || name === 'InvalidStateError') return '当前环境不支持画中画';
-    return '画中画启动失败';
-  }
+      pipWindow = win;
 
-  // ============================================================
-  // Tauri / WebView2 降级：WebView2 不支持原生 PiP，
-  // 用始终置顶的独立 WebviewWindow 直接加载 MJPEG 流（multipart/x-mixed-replace）。
-  // ============================================================
-  async function openTauriPip() {
-    // 动态加载，避免在纯浏览器环境下引入 Tauri 模块
-    const { WebviewWindow: WW } = await import('@tauri-apps/api/webviewWindow');
+      // 用户手动关闭小窗时同步状态，避免按钮卡在“退出画中画”
+      win.onCloseRequested(() => {
+        pipWindow = null;
+        isPip = false;
+      }).catch(() => {});
 
-    const win = new WW(PIP_LABEL, {
-      url: videoUrl,
-      title: '画中画',
-      width: 660,
-      height: 540,
-      resizable: true,
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      focus: true
-    });
+      win.once('tauri://error', (e) => {
+        console.error('画中画窗口创建失败:', e);
+        pipWindow = null;
+        isPip = false;
+        showPipMessage('画中画窗口创建失败');
+      }).catch(() => {});
 
-    pipWindow = win;
-
-    // 用户手动关闭小窗时同步状态，避免按钮卡在“退出画中画”
-    win.onCloseRequested(() => {
-      pipWindow = null;
-      isPip = false;
-    }).catch(() => {});
-
-    win.once('tauri://error', (e) => {
-      console.error('画中画窗口创建失败:', e);
-      pipWindow = null;
-      isPip = false;
+      isPip = true;
+      return true;
+    } catch (e) {
+      console.error('Tauri 独立小窗打开失败:', e);
       showPipMessage('画中画窗口创建失败');
-    }).catch(() => {});
-
-    isPip = true;
+      return false;
+    }
   }
 
-  async function toggleTauriPip() {
-    if (pipWindow) {
-      // 已打开则关闭（onCloseRequested 会重置 pipWindow / isPip）
-      try {
-        await pipWindow.close();
-      } catch (e) {
-        console.warn('关闭画中画窗口失败:', e);
-      }
-      pipWindow = null;
-      isPip = false;
+  // 普通浏览器：用 window.open 打开独立窗口显示 MJPEG 流（最稳定方案）。
+  function openBrowserPip(): void {
+    const win = window.open(
+      '',
+      'go2-pip',
+      'width=640,height=480,alwaysRaised=yes,menubar=no,toolbar=no,location=no'
+    );
+
+    if (!win) {
+      console.error('[PiP] 失败: 浏览器拦截了弹窗');
+      showPipMessage('浏览器拦截了画中画窗口，请允许弹出窗口');
       return;
     }
+
+    // HTML 转义，避免 videoUrl 里的特殊字符破坏标签
+    const src = String(videoUrl)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>画中画 - Go2 智能巡检</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+    img { width: 100vw; height: 100vh; object-fit: contain; display: block; }
+  </style>
+</head>
+<body>
+  <img src="${src}" alt="机器狗监控画面">
+</body>
+</html>`;
 
     try {
-      await openTauriPip();
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
     } catch (e) {
-      console.error('打开画中画窗口失败:', e);
-      showPipMessage('当前环境不支持画中画');
+      // 跨域限制等导致 document 不可写时，退化为直接加载流地址
+      console.warn('[PiP] document.write 失败，改为直接加载视频流:', e);
+      try {
+        win.location.href = videoUrl;
+      } catch (e2) {
+        console.error('[PiP] 失败:', e2);
+        showPipMessage('画中画启动失败，请检查控制台');
+        return;
+      }
     }
+
+    browserPipWindow = win;
+    isPip = true;
+    console.log('[PiP] 已打开独立窗口');
+
+    // 轮询检测小窗是否被用户关闭，及时重置状态
+    if (browserPipTimer) window.clearInterval(browserPipTimer);
+    browserPipTimer = window.setInterval(() => {
+      if (win.closed) {
+        if (browserPipTimer) window.clearInterval(browserPipTimer);
+        browserPipTimer = null;
+        browserPipWindow = null;
+        isPip = false;
+      }
+    }, 500);
   }
 
   // ============================================================
   // 统一切换入口
   // ============================================================
   async function togglePip() {
-    // 未就绪：给出明确提示（按钮虽禁用，仍保留兜底）
+    console.log('[PiP] 点击', { isTauri: isTauri(), streamReady, hasWindow: !!browserPipWindow });
+
+    // 未就绪：给出明确提示，不静默失败
     if (!streamReady) {
       showPipMessage('视频流未连接');
       return;
     }
 
-    // Tauri / WebView2：走独立小窗降级方案
-    if (isTauri()) {
-      await toggleTauriPip();
+    // 已打开：关闭
+    if (isPip) {
+      isPip = false;
+
+      if (pipWindow) {
+        try {
+          await pipWindow.close();
+        } catch (e) {
+          console.warn('关闭画中画窗口失败:', e);
+        }
+        pipWindow = null;
+      }
+
+      if (browserPipWindow) {
+        browserPipWindow.close();
+        browserPipWindow = null;
+      }
+
+      if (browserPipTimer) {
+        window.clearInterval(browserPipTimer);
+        browserPipTimer = null;
+      }
       return;
     }
 
-    // 原生 PiP
-    if (isPip) {
-      await exitPip();
+    // 打开：按运行环境选择方案
+    if (isTauri()) {
+      await openTauriWindow();
     } else {
-      startNativePip();
+      openBrowserPip();
     }
-  }
-
-  async function exitPip() {
-    try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      }
-    } catch (e) {
-      console.warn('退出画中画失败:', e);
-    }
-  }
-
-  function teardownPip() {
-    if (rafId != null) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
-    if (pipStream) {
-      pipStream.getTracks().forEach((t) => t.stop());
-      pipStream = null;
-    }
-    if (pipVideoEl) pipVideoEl.srcObject = null;
-    isPip = false;
-  }
-
-  // 用户关闭原生画中画小窗时触发
-  function onLeavePip() {
-    teardownPip();
   }
 
   // ============================================================
@@ -272,28 +275,28 @@
   // ============================================================
   onMount(() => {
     document.addEventListener('fullscreenchange', onFullscreenChange);
-    pipVideoEl?.addEventListener('leavepictureinpicture', onLeavePip);
 
-    // 能力检测：
-    // - Tauri/WebView2：原生 PiP 不可靠，走独立窗口降级，仍视为“可用”
-    // - 普通浏览器：仅当支持原生 requestPictureInPicture 才视为可用
-    pipAvailable = isTauri() || supportsNativePip();
+    // 能力检测：Tauri 用独立小窗，普通浏览器用 window.open
+    pipAvailable = isTauri() || typeof window.open === 'function';
   });
 
   onDestroy(() => {
     document.removeEventListener('fullscreenchange', onFullscreenChange);
-    pipVideoEl?.removeEventListener('leavepictureinpicture', onLeavePip);
 
     if (pipMessageTimer) {
       window.clearTimeout(pipMessageTimer);
       pipMessageTimer = null;
     }
 
-    // 回收画中画相关资源
-    teardownPip();
-
     // 关闭 Tauri 降级小窗
     if (pipWindow) pipWindow.close().catch(() => {});
+
+    // 关闭浏览器小窗并清理轮询定时器
+    if (browserPipWindow) browserPipWindow.close();
+    if (browserPipTimer) {
+      window.clearInterval(browserPipTimer);
+      browserPipTimer = null;
+    }
 
     if (document.fullscreenElement === cardEl) {
       document.exitFullscreen?.();
@@ -316,7 +319,6 @@
   function pipButtonTitle(): string {
     if (!streamReady) return '视频流未连接';
     if (isPip) return '退出画中画';
-    if (isTauri()) return '画中画（独立小窗）';
     return '画中画';
   }
 </script>
@@ -353,13 +355,12 @@
         {/if}
       </button>
 
-      <!-- 画中画（有可用方案时显示；视频流未就绪时禁用） -->
+      <!-- 画中画（有可用方案时显示；未就绪时点击给出提示） -->
       {#if pipAvailable}
         <button
           type="button"
           onclick={togglePip}
           class={btnClass(isPip)}
-          disabled={!streamReady}
           title={pipButtonTitle()}
           aria-label={pipButtonTitle()}
         >
@@ -399,10 +400,6 @@
       </div>
     {/if}
   </div>
-
-  <!-- 画中画用的隐藏 canvas 与 video -->
-  <canvas bind:this={canvasEl} class="hidden" aria-hidden="true"></canvas>
-  <video bind:this={pipVideoEl} class="hidden" muted playsinline aria-hidden="true"></video>
 </div>
 
 <style>

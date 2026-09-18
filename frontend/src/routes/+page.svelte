@@ -27,6 +27,9 @@
   // ============================================================
   let videoUrl = $state('');
 
+  // ★ 兜底后端地址：当 WebSocket 未连接或未返回地址时，仍然尝试连接本机后端
+  const DEFAULT_BACKEND = 'http://localhost:8000';
+
   // ============================================================
   // 巡检状态（纯本地 UI 状态，不涉及网络）
   // ============================================================
@@ -87,15 +90,17 @@
   // ============================================================
   // ★ 订阅 WebSocket 连接状态
   //    一旦连接成功，就获取后端地址，拼出视频流 URL
-  //    连接断开时清空 videoUrl，避免显示"死图"
+  //    连接断开时用兜底地址，避免显示"死图"或"搜索中"
   // ============================================================
   const unsubStatus = wsService.status.subscribe((s) => {
     if (s === 'connected') {
-      const base = wsService.getBackendBase();
+      const base = wsService.getBackendBase() || DEFAULT_BACKEND;
       videoUrl = `${base}/api/camera/video?width=640&height=480`;
       console.log('📷 视频流地址:', videoUrl);
     } else {
-      videoUrl = '';
+      // 兜底：WebSocket 未连接时也尝试用默认地址拉流
+      videoUrl = `${DEFAULT_BACKEND}/api/camera/video?width=640&height=480`;
+      console.log('📷 视频流地址（兜底）:', videoUrl);
     }
   });
 
