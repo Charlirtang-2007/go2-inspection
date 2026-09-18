@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import AlertModal from '$lib/components/AlertModal.svelte';
-  import AlertTester from '$lib/components/AlertTester.svelte';
+
   // ============================================================
   // ⚠️ 通信相关 import —— 以下逻辑全程未改
   // ============================================================
@@ -684,8 +683,7 @@
     </div>
   </div>
 </div>
-<AlertModal />
-<AlertTester />
+
 <style>
   /* ============ 纯样式，无通信 ============ */
 
