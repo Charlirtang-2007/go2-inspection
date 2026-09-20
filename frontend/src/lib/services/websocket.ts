@@ -1,19 +1,10 @@
 import { writable } from 'svelte/store';
 import { robotStore } from '$lib/stores/robot';
-import { logStore, anomalyStore, inspectionStore, formatFullDateTime } from '$lib/stores/log';
+import { logStore } from '$lib/stores/log';
 import { discoverBackend } from '$lib/services/discovery';
 
 type WSMessage = {
-  type:
-    | 'status_update'
-    | 'log'
-    | 'command_ack'
-    | 'subscribed'
-    | 'error'
-    | 'anomaly'
-    | 'inspection_started'
-    | 'inspection_finished'
-    | 'inspection_status';
+  type: 'status_update' | 'log' | 'command_ack' | 'subscribed' | 'error';
   data?: any;
   topics?: string[];
   message?: string;
@@ -110,82 +101,6 @@ class WebSocketService {
         break;
       }
 
-      // 异常报警：写入 anomalyStore（驱动全屏弹幕/模态弹窗 + 频闪 + 报警声）
-      // 并追加一条异常日志（保留在 logStore 中，供 LogViewer 展示 + 图片下载）
-      case 'anomaly': {
-        if (msg.data) {
-          const raw = msg.data;
-          // 兼容两种等级写法：中文（高/中/低）或英文（high/medium/low），统一为中文
-          const level =
-            raw.level === 'high' || raw.level === '高' ? '高'
-            : raw.level === 'medium' || raw.level === '中' ? '中'
-            : raw.level === 'low' || raw.level === '低' ? '低'
-            : '高';
-          // 兼容字段名：location/area、recordTime/record_time
-          const area = raw.location ?? raw.area ?? '未知区域';
-          const recordTime = raw.recordTime ?? raw.record_time ?? '';
-          const image = this.resolveUrl(raw.image);
-          // 触发报警（弹幕/模态/频闪），统一中文等级与字段
-          anomalyStore.set({ ...raw, level, area, image, recordTime });
-          const severity: 'high' | 'medium' | 'low' =
-            level === '高' ? 'high' : level === '中' ? 'medium' : 'low';
-          logStore.update(logs => [
-            {
-              time: formatFullDateTime(raw.timestamp),
-              level: 'error',
-              message: `🚨 ${raw.type}告警（${level}级）· ${area}`,
-              kind: 'anomaly',
-              type: raw.type,
-              location: area,
-              image,
-              recordTime,
-              severity,
-              timestamp: raw.timestamp
-            },
-            ...logs
-          ].slice(0, 200));
-        }
-        break;
-      }
-
-      // 巡检开始：后端推送唯一 inspection_id
-      case 'inspection_started': {
-        if (msg.data) {
-          inspectionStore.update(s => ({
-            ...s,
-            recording: true,
-            inspection_id: msg.data.inspection_id ?? s.inspection_id
-          }));
-        }
-        break;
-      }
-
-      // 巡检结束：后端推送下载链接
-      case 'inspection_finished': {
-        if (msg.data) {
-          inspectionStore.set({
-            recording: false,
-            inspection_id: msg.data.inspection_id ?? '',
-            video_url: this.resolveUrl(msg.data.video_url),
-            log_url: this.resolveUrl(msg.data.log_url)
-          });
-        }
-        break;
-      }
-
-      // 巡检录制状态：开始/结束录制、下载链接
-      case 'inspection_status': {
-        if (msg.data) {
-          inspectionStore.set({
-            recording: !!msg.data.recording,
-            inspection_id: msg.data.inspection_id ?? '',
-            video_url: this.resolveUrl(msg.data.video_url),
-            log_url: this.resolveUrl(msg.data.log_url)
-          });
-        }
-        break;
-      }
-
       case 'subscribed':
         console.log('✅ 已订阅:', msg.topics);
         break;
@@ -209,15 +124,6 @@ class WebSocketService {
 
   getBackendBase(): string {
     return this.backendBase;
-  }
-
-  // 把后端返回的相对路径（如 /api/download/...）补全为绝对地址，
-  // 否则在开发环境（前端 5173 / 后端 8000）会请求到错误源。
-  private resolveUrl(path: string): string {
-    if (!path) return path;
-    if (/^https?:\/\//i.test(path) || path.startsWith('data:')) return path;
-    const base = this.backendBase || 'http://localhost:8000';
-    return base.replace(/\/$/, '') + path;
   }
 
   disconnect() {

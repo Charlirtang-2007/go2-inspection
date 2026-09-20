@@ -7,10 +7,9 @@ from contextlib import asynccontextmanager
 import json
 import asyncio
 
-from app.routers import robot, camera, detection, route, inspection
+from app.routers import robot, camera, detection, route,recording
 from app.utils.websocket_manager import manager
 from app.services.robot_factory import get_robot_service
-from app.services.inspection_service import inspection_service
 from app.utils.mdns_service import MDNSService 
 
 # ========== mDNS服务实例 ==========
@@ -19,12 +18,10 @@ mdns = MDNSService(port=8000)
 # ========== 生命周期管理 ==========
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时：注册mDNS广播，并把事件循环注入巡检服务（供后台线程安全广播）
+    # 启动时：注册mDNS广播
     mdns.start()
-    inspection_service.set_loop(asyncio.get_running_loop())
     yield
-    # 关闭时：停止广播、结束录制
-    inspection_service.stop()
+    # 关闭时：停止广播
     mdns.stop()
 
 app = FastAPI(
@@ -44,11 +41,11 @@ app.add_middleware(
 )
 
 # 注册路由
+app.include_router(recording.router)
 app.include_router(robot.router)
 app.include_router(camera.router)
 app.include_router(detection.router)
 app.include_router(route.router)
-app.include_router(inspection.router)
 
 
 # ========== 指令处理辅助函数 ==========
@@ -110,30 +107,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     cmd = msg.get("data", {}).get("cmd")
                     print(f"🎮 WebSocket 指令: {cmd}")
 
-                    # 巡检录制指令：不经过机器狗指令执行器
-                    if cmd == "start_inspection":
-                        info = inspection_service.start()
-                        await manager.broadcast({
-                            "type": "inspection_started",
-                            "data": {"inspection_id": info.get("inspection_id", "")}
-                        })
-                        await manager.broadcast({"type": "inspection_status", "data": info})
-                        await manager.send_json(websocket, {
-                            "type": "command_ack",
-                            "data": {"cmd": cmd, "status": "executed", "detail": info}
-                        })
-                        continue
-
-                    if cmd == "stop_inspection":
-                        info = inspection_service.stop()
-                        await manager.broadcast({"type": "inspection_finished", "data": info})
-                        await manager.broadcast({"type": "inspection_status", "data": info})
-                        await manager.send_json(websocket, {
-                            "type": "command_ack",
-                            "data": {"cmd": cmd, "status": "executed", "detail": info}
-                        })
-                        continue
-
                     try:
                         result = await execute_robot_command(cmd)
                         await manager.send_json(websocket, {
@@ -176,6 +149,15 @@ async def websocket_endpoint(websocket: WebSocket):
 async def health_check():
     return {"status": "ok", "service": "Go2 巡检系统后端"}
 
+from app.services.camera_service import camera_service
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    mdns.start()
+    camera_service.start()
+    yield
+    camera_service.stop()
+    mdns.stop()
 
 @app.get("/")
 async def root():
