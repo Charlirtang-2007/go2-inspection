@@ -8,23 +8,15 @@
 # GET	/api/camera/snapshot	获取一帧截图（Base64）
 
 
-# app/routers/camera.py
-
 from fastapi import APIRouter, Response, Query
-from app.services.camera_service import CameraService
-from typing import Optional
 from fastapi.responses import StreamingResponse
+from app.services.camera_service import camera_service
+from typing import Optional
+import base64
+import cv2
+
 router = APIRouter(prefix="/api/camera", tags=["camera"])
 
-# 全局摄像头服务实例（懒加载）
-_camera: Optional[CameraService] = None
-
-def get_camera() -> CameraService:
-    global _camera
-    if _camera is None:
-        _camera = CameraService(camera_index=0)
-        _camera.start()
-    return _camera
 
 @router.get("/video")
 async def video_stream(
@@ -32,25 +24,22 @@ async def video_stream(
     height: Optional[int] = Query(480, description="画面高度")
 ):
     """MJPEG 视频流"""
-    camera = get_camera()
-    if not camera.start():
+    if not camera_service.start():
         return Response(status_code=500, content="Camera not available")
-    
-    return StreamingResponse( #记得同步
-        camera.generate_mjpeg_stream(resize=(width, height)),
+
+    return StreamingResponse(
+        camera_service.generate_mjpeg_stream(resize=(width, height)),
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
+
 
 @router.get("/snapshot")
 async def snapshot():
     """获取一帧快照"""
-    camera = get_camera()
-    frame = camera.get_frame_for_detection()
+    frame = camera_service.get_frame_for_detection()
     if frame is None:
         return {"error": "无法获取画面"}, 500
-    
-    import base64
-    import cv2
+
     _, buffer = cv2.imencode('.jpg', frame)
     return {
         "success": True,

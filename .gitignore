@@ -73,3 +73,6 @@ models/*.onnx
 # 系统文件
 Thumbs.db
 desktop.ini
+
+#视频数据
+backend/recordings/

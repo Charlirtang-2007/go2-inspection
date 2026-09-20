@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 import json
 import asyncio
 
-from app.routers import robot, camera, detection, route
+from app.routers import robot, camera, detection, route,recording
 from app.utils.websocket_manager import manager
 from app.services.robot_factory import get_robot_service
 from app.utils.mdns_service import MDNSService 
@@ -41,6 +41,7 @@ app.add_middleware(
 )
 
 # 注册路由
+app.include_router(recording.router)
 app.include_router(robot.router)
 app.include_router(camera.router)
 app.include_router(detection.router)
@@ -148,6 +149,15 @@ async def websocket_endpoint(websocket: WebSocket):
 async def health_check():
     return {"status": "ok", "service": "Go2 巡检系统后端"}
 
+from app.services.camera_service import camera_service
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    mdns.start()
+    camera_service.start()
+    yield
+    camera_service.stop()
+    mdns.stop()
 
 @app.get("/")
 async def root():

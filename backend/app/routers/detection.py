@@ -15,18 +15,13 @@ from app.services.detection_service import (
     detect_smoke_by_color,
     detect_oil_by_color
 )
-from app.services.camera_service import CameraService
+from app.services.camera_service import camera_service
 from app.services.notification_service import notification_service
 
 router = APIRouter(prefix="/api/detection", tags=["detection"])
 
 def get_camera_frame():
-    """获取当前摄像头画面"""
-    camera = CameraService()
-    camera.start()
-    frame = camera.get_frame_for_detection()
-    camera.stop()
-    return frame
+    return camera_service.get_frame_for_detection()
 
 @router.get("/aruco")
 async def detect_aruco():
