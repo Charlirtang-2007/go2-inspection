@@ -273,6 +273,10 @@
         inspectionStep = '✅ 巡检完成！';
         status = '待机';
         clearIdle();
+
+        // ★ 通知后端停止录制
+        wsService.send({ type: 'command', data: { cmd: 'stop_inspection' } });
+
         logStore.update(logs => [
           { time: new Date().toLocaleTimeString(), level: 'success', message: '✅ 巡检任务完成，共发现 1 处异常' },
           ...logs

@@ -1,7 +1,7 @@
 # app/services/recording_service.py
 # 📁 录制服务
 # 职责：从 camera_service 拿帧，写入 mp4，烧录时间戳，管理文件保留。
-
+import queue
 import cv2
 import os
 import time
@@ -87,7 +87,7 @@ class RecordingService:
         return path
 
     def _record_loop(self):
-        """录制主循环"""
+        """录制主循环：从订阅队列拿帧，不再抢摄像头锁"""
         filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_inspection.mp4"
         filepath = self.output_dir / filename
 
@@ -100,20 +100,26 @@ class RecordingService:
 
         print(f"🎬 开始录制: {filepath}")
 
-        while not self._stop_flag.is_set():
-            frame = camera_service.read_frame()
-            if frame is None:
-                time.sleep(0.01)
-                continue
+        # 订阅独立的帧队列
+        q = camera_service.subscribe("recording", maxsize=30)
 
-            if frame.shape[1] != self.width or frame.shape[0] != self.height:
-                frame = cv2.resize(frame, (self.width, self.height))
+        try:
+            while not self._stop_flag.is_set():
+                try:
+                    frame = q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
 
-            self._draw_timestamp(frame)
+                if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                    frame = cv2.resize(frame, (self.width, self.height))
 
-            with self._lock:
-                if self._writer is not None:
-                    self._writer.write(frame)
+                self._draw_timestamp(frame)
+
+                with self._lock:
+                    if self._writer is not None:
+                        self._writer.write(frame)
+        finally:
+            camera_service.unsubscribe("recording")
 
         print("🎬 录制循环退出")
 

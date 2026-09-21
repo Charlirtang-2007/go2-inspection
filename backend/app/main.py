@@ -50,6 +50,8 @@ app.include_router(route.router)
 
 # ========== 指令处理辅助函数 ==========
 
+from app.services.recording_service import recording_service
+
 async def execute_robot_command(cmd: str):
     """执行机器狗指令，返回结果"""
     robot_service = get_robot_service()
@@ -68,6 +70,23 @@ async def execute_robot_command(cmd: str):
         return robot_service.move(0, 0, -0.3)
     elif cmd in ["stop", "停止"]:
         return robot_service.stop_move()
+
+    # ========== 巡检开始：启动录制 ==========
+    elif cmd == "start_inspection":
+        ok = recording_service.start()
+        return {"success": ok, "action": "start_inspection", "recording": recording_service.is_recording()}
+
+    # ========== 巡检结束：停止录制 ==========
+    elif cmd == "stop_inspection":
+        path = recording_service.stop()
+        return {"success": True, "action": "stop_inspection", "file": path}
+
+    # ========== 紧急停止：停止录制 ==========
+    elif cmd in ["emergency_stop", "紧急停止"]:
+        result = robot_service.stop_move()
+        path = recording_service.stop()
+        return {"success": True, "action": "emergency_stop", "file": path, "detail": result}
+
     else:
         return {"success": False, "error": f"未知指令: {cmd}"}
 
