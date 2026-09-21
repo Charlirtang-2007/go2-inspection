@@ -1,7 +1,7 @@
 import { writable } from 'svelte/store';
 import { robotStore } from '$lib/stores/robot';
 import { logStore } from '$lib/stores/log';
-import { discoverBackend } from '$lib/services/discovery';
+import { discoverBackend, clearBackendCache } from '$lib/services/discovery';
 
 type WSMessage = {
   type: 'status_update' | 'log' | 'command_ack' | 'subscribed' | 'error';
@@ -26,6 +26,10 @@ class WebSocketService {
       } catch (e) {
         console.error('❌ 无法发现后端:', e);
         this.status.set('disconnected');
+        // 3 秒后重试
+        if (!this.reconnectTimer) {
+          this.reconnectTimer = window.setTimeout(() => this.connect(), 3000);
+        }
         return;
       }
     }
@@ -50,7 +54,8 @@ class WebSocketService {
       console.log('⚠️ WebSocket 断开，3秒后重连...');
       this.status.set('disconnected');
       this.ws = null;
-      this.backendBase = ''; // 清空让重连时重新发现
+      this.backendBase = '';
+      clearBackendCache(); // ★ 清掉 mDNS 缓存，重连时重新发现
       if (!this.reconnectTimer) {
         this.reconnectTimer = window.setTimeout(() => this.connect(), 3000);
       }
