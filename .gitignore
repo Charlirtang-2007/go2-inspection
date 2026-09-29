@@ -31,6 +31,7 @@ htmlcov/
 .pdm.toml
 *.egg-info/
 .eggs/
+backend/unitree_sdk2_python/
 
 # ========== Tauri ==========
 src-tauri/target/
