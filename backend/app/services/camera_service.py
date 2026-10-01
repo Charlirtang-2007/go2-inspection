@@ -1,6 +1,6 @@
 # app/services/camera_service.py
 # 📁 摄像头服务
-# 职责：单例 + 后台采集 + 发布订阅，各消费者独立队列
+# 职责：单例 + 后台采集狗自带摄像头 + 发布订阅，各消费者独立队列
 
 import cv2
 import time
@@ -24,12 +24,12 @@ class CameraService:
                     cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, camera_index: int = 0):
+    def __init__(self, network_interface: str = "enp2s0"):
         if getattr(self, "_initialized", False):
             return
 
-        self.camera_index = camera_index
-        self.cap: Optional[cv2.VideoCapture] = None
+        self.network_interface = network_interface
+        self._video_client = None
         self._is_running = False
 
         self._latest_frame: Optional[np.ndarray] = None
@@ -48,16 +48,27 @@ class CameraService:
         if self._is_running:
             return True
 
-        self.cap = cv2.VideoCapture(self.camera_index)
-        if not self.cap.isOpened():
-            self.cap = None
+        # 初始化 VideoClient（连接狗自带摄像头）
+        try:
+            from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+            from unitree_sdk2py.go2.video.video_client import VideoClient
+
+            print(f"📷 初始化 VideoClient（网卡: {self.network_interface}）...")
+            ChannelFactoryInitialize(0, self.network_interface)
+
+            self._video_client = VideoClient()
+            self._video_client.SetTimeout(1.0)
+            self._video_client.Init()
+            print("✅ VideoClient 初始化成功")
+        except Exception as e:
+            print(f"❌ VideoClient 初始化失败: {e}")
             return False
 
         self._stop_flag.clear()
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
         self._is_running = True
-        print("✅ CameraService: 摄像头已启动")
+        print("✅ CameraService: 狗摄像头已启动")
         return True
 
     def stop(self):
@@ -66,17 +77,14 @@ class CameraService:
         self._stop_flag.set()
         if self._thread:
             self._thread.join(timeout=3)
-        if self.cap:
-            self.cap.release()
-            self.cap = None
+        self._video_client = None
         self._is_running = False
         self._thread = None
-        print("🛑 CameraService: 摄像头已停止")
+        print("🛑 CameraService: 狗摄像头已停止")
 
     # ========== 订阅接口 ==========
 
     def subscribe(self, name: str, maxsize: int = 2) -> queue.Queue:
-        """订阅帧流，返回队列（满了自动丢旧帧）"""
         with self._sub_lock:
             q = queue.Queue(maxsize=maxsize)
             self._subscribers[name] = q
@@ -84,7 +92,6 @@ class CameraService:
         return q
 
     def unsubscribe(self, name: str):
-        """取消订阅"""
         with self._sub_lock:
             self._subscribers.pop(name, None)
         print(f"📤 CameraService: '{name}' 已取消订阅")
@@ -92,20 +99,39 @@ class CameraService:
     # ========== 采集循环 ==========
 
     def _capture_loop(self):
+        """从狗自带摄像头拉帧"""
         while not self._stop_flag.is_set():
-            if self.cap is None:
+            if self._video_client is None:
                 break
 
-            ret, frame = self.cap.read()
-            if not ret:
-                time.sleep(0.01)
+            try:
+                # GetImageSample 返回 (ret, data)
+                # ret == 0 成功，data 是 JPEG 字节（可能是 list 或 bytes）
+                ret, data = self._video_client.GetImageSample()
+                if ret != 0 or data is None:
+                    time.sleep(0.02)
+                    continue
+
+                # data 可能是 list，转成 bytes
+                if isinstance(data, list):
+                    data = bytes(data)
+
+                # JPEG 解码为 numpy array
+                img_array = np.frombuffer(data, dtype=np.uint8)
+                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if frame is None:
+                    time.sleep(0.02)
+                    continue
+            except Exception as e:
+                print(f"⚠️ CameraService 取帧失败: {e}")
+                time.sleep(0.1)
                 continue
 
-            # 保存最新帧（给非订阅式消费者用）
+            # 保存最新帧
             with self._frame_lock:
                 self._latest_frame = frame
 
-            # 广播给所有订阅者
+            # 广播给订阅者
             with self._sub_lock:
                 subscribers = list(self._subscribers.items())
 
@@ -113,7 +139,6 @@ class CameraService:
                 try:
                     q.put_nowait(frame.copy())
                 except queue.Full:
-                    # 队列满：丢最旧的，放最新的
                     try:
                         q.get_nowait()
                         q.put_nowait(frame.copy())
@@ -123,18 +148,15 @@ class CameraService:
     # ========== 兼容旧接口 ==========
 
     def read_frame(self) -> Optional[np.ndarray]:
-        """获取最新一帧（非订阅式，一次性读）"""
         with self._frame_lock:
             if self._latest_frame is None:
                 return None
             return self._latest_frame.copy()
 
     def get_frame_for_detection(self) -> Optional[np.ndarray]:
-        """兼容旧接口"""
         return self.read_frame()
 
     def generate_mjpeg_stream(self, quality: int = 80, resize: Tuple[int, int] = None):
-        """生成 MJPEG 视频流（走订阅模式）"""
         if not self.start():
             return
 
@@ -166,5 +188,5 @@ class CameraService:
         return self._is_running
 
 
-# 全局单例
-camera_service = CameraService(camera_index=0)
+# 全局单例（网卡名按实际情况改）
+camera_service = CameraService(network_interface="enp2s0")

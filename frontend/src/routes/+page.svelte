@@ -160,13 +160,22 @@
   // 键盘指令节流
   // 100ms 窗口内只发最后一条，避免长按方向键狂发消息
   // ============================================================
-  function sendKeyboardCommand(cmd: string) {
+    function sendKeyboardCommand(cmd: string) {
     const now = Date.now();
     pendingKeyboardCmd = cmd;
-    if (now - lastWsSendTime >= 100) {
+
+    // ★ 修改：节流间隔从 100ms 改成 50ms
+    // 原因：长按方向键时，每 100ms 发一次会让狗的运动看起来有点顿。
+    //       50ms 发一次，狗的 Move 指令刷新更频繁，运动更平滑。
+    const THROTTLE_MS = 50;
+
+    if (now - lastWsSendTime >= THROTTLE_MS) {
       flushKeyboardCommand();
     } else if (wsThrottleTimer == null) {
-      wsThrottleTimer = setTimeout(flushKeyboardCommand, 100 - (now - lastWsSendTime));
+      wsThrottleTimer = setTimeout(
+        flushKeyboardCommand,
+        THROTTLE_MS - (now - lastWsSendTime)
+      );
     }
   }
 
@@ -201,8 +210,7 @@
     event.preventDefault();
     event.stopPropagation();
 
-    // 按住不放产生的自动重复事件直接忽略，避免高频触发
-    if (event.repeat) return;
+    
 
     // 视觉反馈：记录当前按下的方向（keyup 时清空）
     activeDirection = cmd;
@@ -221,6 +229,12 @@
     const cmd = resolveKeyCmd(event.key);
     if (cmd && cmd === activeDirection) {
       activeDirection = '';
+
+      // ★ 新增：松开按键立即发停止指令
+      // 原因：长按 A 时，每 100ms 发一次 Move(0,0,1.2)，狗持续旋转。
+      //       如果松开时不发 stop，狗会按最后一次速度一直转下去。
+      console.log('📩 松开，发停止指令');
+      wsService.send({ type: 'command', data: { cmd: 'stop' } });
     }
   }
 

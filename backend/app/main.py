@@ -64,10 +64,11 @@ async def execute_robot_command(cmd: str):
         return robot_service.move(0.3, 0, 0)
     elif cmd in ["backward", "后退"]:
         return robot_service.move(-0.3, 0, 0)
+    # ★ 修改：旋转速度从 0.3 加大到 1.2 rad/s（约 69°/秒）
     elif cmd in ["left", "左转"]:
-        return robot_service.move(0, 0, 0.3)
+        return robot_service.move(0, 0, 1.2)
     elif cmd in ["right", "右转"]:
-        return robot_service.move(0, 0, -0.3)
+        return robot_service.move(0, 0, -1.2)
     elif cmd in ["stop", "停止"]:
         return robot_service.stop_move()
 
