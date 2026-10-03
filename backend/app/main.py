@@ -2,27 +2,40 @@
 # 后端主接口
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import json
-import asyncio
 
-from app.routers import robot, camera, detection, route,recording
+from app.routers import robot, camera, detection, route, recording
 from app.utils.websocket_manager import manager
 from app.services.robot_factory import get_robot_service
-from app.utils.mdns_service import MDNSService 
+from app.services.camera_service import camera_service
+from app.services.recording_service import recording_service
+from app.utils.mdns_service import MDNSService
 
 # ========== mDNS服务实例 ==========
 mdns = MDNSService(port=8000)
 
+
 # ========== 生命周期管理 ==========
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时：注册mDNS广播
-    mdns.start()
+    # ---------- 启动 ----------
+    mdns.start()                      # mDNS 广播
+    camera_service.start()            # 摄像头后台采集
+
+    # ★ 自动连接机器狗
+    robot_service = get_robot_service()
+    if robot_service.connect():
+        print("✅ 机器狗已自动连接")
+    else:
+        print("⚠️ 机器狗自动连接失败，请检查网卡或网络")
+
     yield
-    # 关闭时：停止广播
+
+    # ---------- 关闭 ----------
+    camera_service.stop()
     mdns.stop()
+
 
 app = FastAPI(
     title="Go2 巡检系统 API",
@@ -50,8 +63,6 @@ app.include_router(route.router)
 
 # ========== 指令处理辅助函数 ==========
 
-from app.services.recording_service import recording_service
-
 async def execute_robot_command(cmd: str):
     """执行机器狗指令，返回结果"""
     robot_service = get_robot_service()
@@ -64,7 +75,7 @@ async def execute_robot_command(cmd: str):
         return robot_service.move(0.3, 0, 0)
     elif cmd in ["backward", "后退"]:
         return robot_service.move(-0.3, 0, 0)
-    # ★ 修改：旋转速度从 0.3 加大到 1.2 rad/s（约 69°/秒）
+    # 旋转速度 1.2 rad/s ≈ 69°/秒
     elif cmd in ["left", "左转"]:
         return robot_service.move(0, 0, 1.2)
     elif cmd in ["right", "右转"]:
@@ -72,17 +83,17 @@ async def execute_robot_command(cmd: str):
     elif cmd in ["stop", "停止"]:
         return robot_service.stop_move()
 
-    # ========== 巡检开始：启动录制 ==========
+    # 巡检开始：启动录制
     elif cmd == "start_inspection":
         ok = recording_service.start()
         return {"success": ok, "action": "start_inspection", "recording": recording_service.is_recording()}
 
-    # ========== 巡检结束：停止录制 ==========
+    # 巡检结束：停止录制
     elif cmd == "stop_inspection":
         path = recording_service.stop()
         return {"success": True, "action": "stop_inspection", "file": path}
 
-    # ========== 紧急停止：停止录制 ==========
+    # 紧急停止：停狗 + 停录制
     elif cmd in ["emergency_stop", "紧急停止"]:
         result = robot_service.stop_move()
         path = recording_service.stop()
@@ -91,10 +102,10 @@ async def execute_robot_command(cmd: str):
     else:
         return {"success": False, "error": f"未知指令: {cmd}"}
 
-# 新增：提供mDNS发现信息的接口（备用）
+
+# ========== mDNS 发现信息接口（备用） ==========
 @app.get("/api/discovery")
 async def discovery():
-    """返回本服务的连接信息，前端也可通过此接口获取"""
     return {
         "service": "go2-inspection",
         "ip": mdns.get_local_ip(),
@@ -169,15 +180,6 @@ async def websocket_endpoint(websocket: WebSocket):
 async def health_check():
     return {"status": "ok", "service": "Go2 巡检系统后端"}
 
-from app.services.camera_service import camera_service
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    mdns.start()
-    camera_service.start()
-    yield
-    camera_service.stop()
-    mdns.stop()
 
 @app.get("/")
 async def root():

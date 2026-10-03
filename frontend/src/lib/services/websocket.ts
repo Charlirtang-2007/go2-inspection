@@ -26,7 +26,6 @@ class WebSocketService {
       } catch (e) {
         console.error('❌ 无法发现后端:', e);
         this.status.set('disconnected');
-        // 3 秒后重试
         if (!this.reconnectTimer) {
           this.reconnectTimer = window.setTimeout(() => this.connect(), 3000);
         }
@@ -55,7 +54,7 @@ class WebSocketService {
       this.status.set('disconnected');
       this.ws = null;
       this.backendBase = '';
-      clearBackendCache(); // ★ 清掉 mDNS 缓存，重连时重新发现
+      clearBackendCache();
       if (!this.reconnectTimer) {
         this.reconnectTimer = window.setTimeout(() => this.connect(), 3000);
       }
@@ -78,31 +77,30 @@ class WebSocketService {
         break;
       }
 
-      // 系统日志：只接收后端主动推送的事件 / 告警
       case 'log': {
         if (msg.data) logStore.update(logs => [msg.data, ...logs].slice(0, 100));
         break;
       }
 
       // ============================================================
-      // ★ 修复点：命令回执不再写入日志
+      // command_ack 处理
       // ============================================================
-      // 后端每收到一条 command（比如方向键发来的 forward），
-      // 都会回推一条 command_ack 表示"执行成功/失败"。
-      // 这是正常的协议设计，后端没问题。
-      //
-      // 但前端【不能】把 command_ack 当成日志写进 logStore：
-      //   1. 方向键/WASD 是高频操作，每按一次后端回一条 ack
-      //   2. 每条 ack 触发一次 logStore.update()
-      //   3. LogViewer 订阅了 logStore，于是每次按键都重渲染
-      //   4. 连按方向键 → 高频重渲染 → 主线程卡死 → 标签切不动
-      //
-      // 按键的视觉反馈由 +page.svelte 里的 activeDirection 负责，
-      // 不需要通过日志再反馈一次。
-      //
-      // 所以这里直接 break，不做任何 logStore 写入。
+      // 成功时不写日志，避免方向键高频刷屏导致重渲染卡顿。
+      // 失败时必须写日志，否则用户看不到"指令为什么没反应"。
       // ============================================================
       case 'command_ack': {
+        const data = msg.data;
+        if (!data) break;
+
+        if (data.status !== 'executed') {
+          const level: 'error' = 'error';
+          const reason = data.detail?.error || data.error || '未知错误';
+          logStore.update(logs => [{
+            time: new Date().toLocaleTimeString(),
+            level,
+            message: `指令 ${data.cmd} 失败: ${reason}`
+          }, ...logs].slice(0, 100));
+        }
         break;
       }
 
