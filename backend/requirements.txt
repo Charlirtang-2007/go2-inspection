@@ -10,3 +10,4 @@ zeroconf>=0.130.0
 httpx
 python-dotenv
 git+https://github.com/unitreerobotics/unitree_sdk2_python.git
+ultralytics>=8.0.0

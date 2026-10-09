@@ -1,27 +1,24 @@
 # app/routers/detection.py
-# 📁 3. app/routers/detection.py —— 视觉检测路由
-# 职责：提供 ArUco 标记识别和异常检测（火焰/烟雾/漏油）能力。
+# 📁 视觉检测路由
+# 职责：ArUco 识别 + YOLO 异常结果读取（推理在后台线程）
 
-# 接口列表
-# 方法	路径	功能
-# GET	/api/detection/aruco	检测画面中的 ArUco 标记
-# GET	/api/detection/anomaly	检测异常（火焰/烟雾/漏油）
-
-
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 from app.services.detection_service import (
     detect_aruco_markers,
-    detect_fire_by_color,
-    detect_smoke_by_color,
-    detect_oil_by_color
+    get_latest_result,
 )
 from app.services.camera_service import camera_service
 from app.services.notification_service import notification_service
 
 router = APIRouter(prefix="/api/detection", tags=["detection"])
 
+# 用于做“边缘触发”的上一轮状态
+_prev_has_anomaly = False
+
+
 def get_camera_frame():
     return camera_service.get_frame_for_detection()
+
 
 @router.get("/aruco")
 async def detect_aruco():
@@ -29,7 +26,7 @@ async def detect_aruco():
     frame = get_camera_frame()
     if frame is None:
         return {"error": "无法获取画面"}, 500
-    
+
     markers = detect_aruco_markers(frame)
     return {
         "success": True,
@@ -37,51 +34,37 @@ async def detect_aruco():
         "markers": markers
     }
 
+
 @router.get("/anomaly")
-async def detect_anomaly(
-    fire_threshold: float = Query(0.01, description="火焰检测阈值"),
-    smoke_threshold: float = Query(0.02, description="烟雾检测阈值"),
-    oil_threshold: float = Query(0.01, description="漏油检测阈值")
-):
-    """检测异常（火焰/烟雾/漏油）"""
-    frame = get_camera_frame()
-    if frame is None:
-        return {"error": "无法获取画面"}, 500
+async def detect_anomaly():
+    """读取后台 YOLO 推理的最新结果；状态从“无异常”翻转到“有异常”时触发通知"""
+    global _prev_has_anomaly
 
-    # 三项检测
-    has_fire = detect_fire_by_color(frame, fire_threshold)
-    has_smoke = detect_smoke_by_color(frame, smoke_threshold)
-    has_oil = detect_oil_by_color(frame, oil_threshold)
+    result = get_latest_result()
+    has = result.get("has_anomaly", False)
+    anomalies = result.get("anomalies", [])
 
-    # 汇总异常
-    anomalies = []
-    if has_fire:
-        anomalies.append("🔥 火焰")
-    if has_smoke:
-        anomalies.append("💨 烟雾")
-    if has_oil:
-        anomalies.append("💧 漏油")
-
-    has_anomaly = len(anomalies) > 0
-
-    # 检测到异常 → 触发通知
+    # ========== 边缘触发：无 → 有时通知 ==========
     notified = False
     notify_channels = []
-    if has_anomaly:
-        result = await notification_service.notify_anomaly(
-            anomaly_type="、".join(anomalies),
-            detail=f"检测到 {len(anomalies)} 处异常"
-        )
-        notified = result.get("sent", False)
-        notify_channels = result.get("channels", [])
+    if has and not _prev_has_anomaly:
+        types = "、".join([a.get("type", "unknown") for a in anomalies])
+        try:
+            nres = await notification_service.notify_anomaly(
+                anomaly_type=types,
+                detail=f"检测到 {len(anomalies)} 处异常",
+            )
+            notified = nres.get("sent", False)
+            notify_channels = nres.get("channels", [])
+        except Exception as e:
+            print(f"⚠️ 通知发送失败: {e}")
+    _prev_has_anomaly = has
 
     return {
         "success": True,
-        "fire": has_fire,
-        "smoke": has_smoke,
-        "oil": has_oil,
-        "has_anomaly": has_anomaly,
+        "has_anomaly": has,
         "anomalies": anomalies,
         "notified": notified,
-        "notify_channels": notify_channels
+        "notify_channels": notify_channels,
+        "last_update": result.get("last_update", 0.0),
     }
