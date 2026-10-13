@@ -24,7 +24,8 @@ async def lifespan(app: FastAPI):
 
     # ★ 启动 YOLO 后台推理线程（从 camera_service 拿最新帧）
     detection_service.start_worker(
-        frame_source=camera_service.read_frame
+        frame_source=camera_service.read_frame,
+        interval=2.0,   # VLM 慢，给够时间；YOLO 可以改 1.0
     )
 
     robot_service = get_robot_service()

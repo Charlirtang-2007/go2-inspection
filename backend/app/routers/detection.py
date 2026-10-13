@@ -68,3 +68,15 @@ async def detect_anomaly():
         "notify_channels": notify_channels,
         "last_update": result.get("last_update", 0.0),
     }
+
+from app.services.detectors import preset_detector
+
+@router.post("/trigger_preset")
+async def trigger_preset(area: str = "B", reason: str = "手动触发"):
+    preset_detector.trigger(area=area, reason=reason)
+    return {"success": True}
+
+@router.post("/clear_preset")
+async def clear_preset():
+    preset_detector.clear()
+    return {"success": True}
