@@ -1,4 +1,21 @@
 <script lang="ts">
+
+  
+  import { startDetectionPolling, stopDetectionPolling } from '$lib/services/detection';
+  import DetectionDebug from '$lib/components/DetectionDebug.svelte';
+
+  onMount(() => {
+    // 等 WebSocket 连上再启动轮询
+    const timer = setTimeout(() => {
+      startDetectionPolling(() => wsService.getBackendBase());
+    }, 1000);
+
+    return () => {
+      clearTimeout(timer);
+      stopDetectionPolling();
+    };
+  });
+
   import { onMount, onDestroy } from 'svelte';
   import AlertModal from '$lib/components/AlertModal.svelte';
   import AlertTester from '$lib/components/AlertTester.svelte';
@@ -607,6 +624,7 @@
 </div>
 <AlertModal />
 <AlertTester />
+<DetectionDebug />
 <style>
   /* ============ 纯样式，无通信 ============ */
 

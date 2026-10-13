@@ -4,28 +4,57 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import json
+import os
+import asyncio
+import threading
 
 from app.routers import robot, camera, detection, route, recording
 from app.utils.websocket_manager import manager
 from app.services.robot_factory import get_robot_service
 from app.services.camera_service import camera_service
 from app.services.recording_service import recording_service
-from app.services import detection_service   # ★ 新增
+from app.services import detection_service
+from app.services.notification_service import notification_service
 from app.utils.mdns_service import MDNSService
 
 mdns = MDNSService(port=8000)
 
 
+# ========== 异常事件回调 ==========
+def _on_anomaly_callback(anomalies):
+    """
+    由 detection_service 的 worker 在状态翻转（无异常 → 有异常）时调用。
+    在独立线程里跑异步通知，避免阻塞 worker 循环。
+    """
+    types = "、".join([a.get("type", "unknown") for a in anomalies])
+    detail = f"检测到 {len(anomalies)} 处异常"
+    print(f"[main] 收到异常回调: {types}")
+
+    def _run():
+        try:
+            asyncio.run(notification_service.notify_anomaly(
+                anomaly_type=types,
+                detail=detail,
+            ))
+        except Exception as e:
+            print(f"[main] 通知发送失败: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+# ========== 生命周期 ==========
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ---------- 启动 ----------
     mdns.start()
     camera_service.start()
 
-    # ★ 启动 YOLO 后台推理线程（从 camera_service 拿最新帧）
+    # 启动检测 worker：三路检测 + 状态翻转回调
+    interval = float(os.getenv("DETECTION_INTERVAL", "2.0"))
     detection_service.start_worker(
         frame_source=camera_service.read_frame,
-        interval=2.0,   # VLM 慢，给够时间；YOLO 可以改 1.0
+        interval=interval,
+        on_anomaly=_on_anomaly_callback,
     )
 
     robot_service = get_robot_service()
@@ -37,7 +66,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # ---------- 关闭 ----------
-    detection_service.stop_worker()   # ★ 新增
+    detection_service.stop_worker()
     camera_service.stop()
     mdns.stop()
 
@@ -52,7 +81,7 @@ app = FastAPI(
 app.mount(
     "/anomalies",
     StaticFiles(directory="recordings/anomalies"),
-    name="anomalies"
+    name="anomalies",
 )
 
 app.add_middleware(
@@ -137,17 +166,17 @@ async def websocket_endpoint(websocket: WebSocket):
                             "data": {
                                 "cmd": cmd,
                                 "status": "executed" if result.get("success") else "failed",
-                                "detail": result
-                            }
+                                "detail": result,
+                            },
                         })
                     except Exception as e:
                         await manager.send_json(websocket, {
                             "type": "command_ack",
-                            "data": {"cmd": cmd, "status": "error", "error": str(e)}
+                            "data": {"cmd": cmd, "status": "error", "error": str(e)},
                         })
                 else:
                     await manager.send_json(websocket, {
-                        "type": "error", "message": f"未知消息类型: {msg_type}"
+                        "type": "error", "message": f"未知消息类型: {msg_type}",
                     })
             except json.JSONDecodeError:
                 await manager.send_json(websocket, {"type": "error", "message": "无效的 JSON 格式"})
@@ -170,8 +199,10 @@ async def root():
             "/api/robot/command": "发送控制指令",
             "/api/camera/video": "MJPEG 视频流",
             "/api/detection/aruco": "ArUco 标记检测",
-            "/api/detection/anomaly": "异常检测（YOLO）",
+            "/api/detection/anomaly": "异常检测结果（只读）",
+            "/api/detection/trigger_preset": "手动触发预设异常",
+            "/api/detection/clear_preset": "清除预设异常",
             "/api/route/list": "路线列表",
-            "/ws": "WebSocket 连接"
-        }
+            "/ws": "WebSocket 连接",
+        },
     }

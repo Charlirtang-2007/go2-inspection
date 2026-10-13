@@ -18,7 +18,7 @@ class NotificationService:
         # 去重缓存：{异常类型: 上次发送时间戳}
         self._last_notify = {}
         # 冷却时间：同一异常 5 分钟内只发一次
-        self.cooldown = 300
+        self.cooldown = 60
 
     async def notify_anomaly(self, anomaly_type: str, detail: str = ""):
         """并发触发所有已配置的通知渠道"""
