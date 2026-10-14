@@ -1,6 +1,6 @@
 # 🤖 Go2 智能巡检系统
 
-> 基于宇树 Go2 X 机器狗的智慧工厂/园区 AI 巡检系统
+> 基于宇树 Go2 X 机器狗的智慧工厂/园区 AI 巡检系统  
 > 参赛项目：职业院校技能大赛——新一代信息技术赛道
 
 ---
@@ -12,7 +12,7 @@
 ### 核心价值
 
 - 🏭 **替代人工进入危险区域**：高温、有毒、密闭环境下人员无法长时间停留
-- 🔄 **7×24小时不间断巡检**：标准化的巡检路线与频次
+- 🔄 **7×24 小时不间断巡检**：标准化的巡检路线与频次
 - 🧠 **AI 视觉识别异常**：火焰、烟雾、滴漏等常见隐患自动识别
 - 📊 **数据化巡检报告**：实时上报、自动录制、完整证据链
 
@@ -77,13 +77,7 @@
 | **OpenCV** | - | 图像处理、视频录制 |
 | **WebSocket** | - | 实时通信 |
 | **zeroconf** | - | mDNS 广播 |
-
-### 机器狗 SDK
-
-| 方式 | 说明 |
-| :--- | :--- |
-| **unitree_sdk2py** | 官方 SDK（网线直连 DDS，已验证） |
-| **go2-webrtc-connect** | 社区方案（WiFi 无线，备选，未接入） |
+| **unitree_sdk2py** | - | 官方 SDK（网线直连 DDS） |
 
 ### 外部服务
 
@@ -91,6 +85,7 @@
 | :--- | :--- |
 | **PushPlus** | 异常推送到微信 |
 | **企业微信机器人** | 异常推送到工作群 |
+| **阿里云百炼（千问）** | VLM 视觉大模型，识别烟雾/火焰/滴漏 |
 
 ---
 
@@ -109,8 +104,10 @@
 | 模拟模式 | ✅ | 无硬件时可切换 `USE_MOCK_ROBOT=true` |
 | 状态监控 | ✅ | 电量、任务、在线状态实时更新 |
 | 巡检日志 | ✅ | 实时日志滚动显示 |
-| ArUco 识别 | ✅ | 起点/终点标记识别 |
-| 异常检测（颜色） | ✅ | 火焰、烟雾、滴漏占位实现 |
+| ArUco 识别 | ✅ | 起点/终点/区域标识识别 |
+| **VLM 云端检测** | ✅ | 千问 `qwen3-vl-plus`，识别烟雾，实测置信度 0.85+ |
+| **三路检测器架构** | ✅ | preset / yolo / vlm，环境变量 `DETECTION_ENGINE` 切换 |
+| **异常自动推送** | ✅ | 后端 worker 状态翻转直接触发，不依赖前端轮询 |
 | 非全屏告警弹窗 | ✅ | 弹窗 + 声音 + 手动确认 |
 | 全屏告警 | ✅ | 弹幕 + 频闪 + ESC 自动确认 |
 | 告警来源隔离 | ✅ | 弹窗和弹幕互不干扰 |
@@ -123,12 +120,13 @@
 
 | 模块 | 说明 |
 | :--- | :--- |
-| 机器狗自带摄像头视频流 | 替代当前 AI 机台外接 USB 摄像头 |
-| YOLO 视觉模型 | 火焰烟雾模型已就绪，待接入；滴漏模型待训练 |
+| 机器狗自带摄像头视频流 | 当前使用外接 USB 摄像头，待接入狗自带摄像头 |
+| YOLO 本地模型 | 已接入但作为备用，主力为 VLM |
 | 巡检流程真机化 | 当前前端模拟，待改为"前端发点位 + 后端执行" |
-| 无线控制方案 | 香橙派中转站方案，待采购验证 |
-| 异常截图 + 红框标注 | 日志增强 |
+| 无线控制方案 | KICKPI K2B 板子已下单，待到货验证 |
+| 异常截图 + 红框标注 | VLM 无 bbox，preset 使用 ArUco bbox 画框 |
 | 日志文件生成 | 巡检日志导出（JSON + 图片 + ZIP） |
+| ArUco 铭牌设计打印 | 起点/A区/B区/终点 A5 铭牌 |
 
 ---
 
@@ -154,6 +152,7 @@ go2-inspection/
 │   │       │   ├── AlertModal.svelte       # 非全屏告警弹窗
 │   │       │   ├── FullscreenAlert.svelte  # 全屏弹幕 + 频闪
 │   │       │   ├── RecordingList.svelte    # 录制文件列表
+│   │       │   ├── DetectionDebug.svelte   # 轮询调试面板
 │   │       │   └── AlertTester.svelte      # 测试面板（dev 专用）
 │   │       ├── services/
 │   │       │   ├── websocket.ts            # WebSocket 封装
@@ -179,18 +178,23 @@ go2-inspection/
     │   ├── routers/
     │   │   ├── robot.py           # 机器狗控制
     │   │   ├── camera.py          # 视频流 + 快照
-    │   │   ├── detection.py       # ArUco + 异常检测 + 触发通知
+    │   │   ├── detection.py       # ArUco + 异常检测接口
     │   │   ├── route.py           # 路线管理
     │   │   └── recording.py       # 录制控制 + 列表 + 下载
     │   ├── services/
     │   │   ├── camera_service.py        # 摄像头单例 + 后台采集 + 发布订阅
     │   │   ├── recording_service.py     # 录制 + 时间戳 + 文件保留
-    │   │   ├── detection_service.py     # 颜色检测算法
+    │   │   ├── detection_service.py     # 三路检测调度 + worker + 事件回调
     │   │   ├── notification_service.py  # PushPlus + 企业微信
     │   │   ├── robot_interface.py       # 抽象接口
     │   │   ├── robot_mock.py            # 模拟实现
     │   │   ├── robot_real.py            # 真机实现（有线 DDS）
-    │   │   └── robot_factory.py         # 工厂函数
+    │   │   ├── robot_factory.py         # 工厂函数
+    │   │   └── detectors/               # 检测器目录
+    │   │       ├── __init__.py
+    │   │       ├── yolo_detector.py     # 本地 YOLO（备用）
+    │   │       ├── vlm_detector.py      # 云端千问（主力）
+    │   │       └── preset_detector.py   # 预设兜底（ArUco 触发）
     │   ├── models/
     │   │   ├── robot.py           # Command / RobotStatus
     │   │   └── route.py           # RoutePlan
@@ -200,7 +204,10 @@ go2-inspection/
     ├── data/
     │   └── routes.json            # 路线数据
     ├── recordings/                # 录制文件输出（gitignore）
+    ├── models/
+    │   └── smoke.pt               # YOLO 模型文件（备用）
     ├── .env                       # 敏感配置（gitignore）
+    ├── .env.example               # 环境变量模板
     ├── requirements.txt
     ├── deploy.sh                  # AI机台部署脚本
     └── run.py
@@ -228,11 +235,29 @@ cd go2-inspection/backend
 # 2. 执行部署脚本（自动完成系统依赖 + CycloneDDS + venv + pip）
 ./deploy.sh
 
-# 3. 配置 .env（通知服务凭证）
-cat > .env << 'EOF'
+# 3. 复制并编辑 .env（通知服务凭证 + VLM 密钥）
+cp .env.example .env
+vim .env
+```
+
+`.env` 关键配置：
+
+```bash
+# 机器人连接
+USE_MOCK_ROBOT=false
+ROBOT_NETWORK_INTERFACE=enp2s0
+
+# 检测引擎：yolo / vlm / preset / 组合
+DETECTION_ENGINE=vlm
+DETECTION_INTERVAL=2.0
+
+# VLM（千问）
+DASHSCOPE_API_KEY=sk-你的key
+VLM_MODEL=qwen3-vl-plus
+
+# 通知
 PUSHPLUS_TOKEN=你的PushPlus_Token
-WECOM_WEBHOOK=你的企业微信Webhook地址
-EOF
+WECOM_WEBHOOK=你的企业微信Webhook
 ```
 
 > `deploy.sh` 会自动：
@@ -306,7 +331,9 @@ npm run tauri dev
 | `GET` | `/api/camera/video` | MJPEG 视频流 |
 | `GET` | `/api/camera/snapshot` | 单帧快照 |
 | `GET` | `/api/detection/aruco` | ArUco 标记检测 |
-| `GET` | `/api/detection/anomaly` | 异常检测 |
+| `GET` | `/api/detection/anomaly` | 读取最新异常检测结果 |
+| `POST` | `/api/detection/trigger_preset` | 手动触发预设异常 |
+| `POST` | `/api/detection/clear_preset` | 清除预设异常 |
 | `GET` | `/api/route/list` | 路线列表 |
 | `GET` | `/api/route/default` | 默认路线 |
 | `POST` | `/api/route/save` | 保存路线 |
@@ -356,21 +383,25 @@ npm run tauri dev
 
 ## 🔔 告警系统
 
-### 触发链
+### 触发链（新版）
 
 ```
-检测到异常（颜色检测 / YOLO）
+后端 detection_service worker 每 2 秒检测
     ↓
-后端 /api/detection/anomaly 返回 has_anomaly=true
+检测到异常（VLM 返回 has_smoke: true）
     ↓
-后端触发通知（PushPlus + 企业微信，5分钟冷却）
+状态翻转 false→true
     ↓
-前端轮询发现异常 → 推入 alertStore
+on_anomaly 回调 → notification_service
+    ├── PushPlus 推送
+    └── 企业微信推送
     ↓
-根据当前是否全屏，分流到两个通道：
-    ├─ 非全屏：AlertModal 弹窗 + 声音 + 手动确认
-    └─ 全屏：FullscreenAlert 弹幕 + 频闪 + 声音 + ESC 自动确认
+同时写入 _latest_result
+    ↓
+前端轮询读到 → 弹窗 + 日志
 ```
+
+**关键变化**：推送不再依赖前端轮询，后端检测到就推。
 
 ### 告警来源隔离
 
@@ -427,15 +458,15 @@ backend/recordings/
 
 ### WiFi 无线模式（规划中）
 
-**方案**：香橙派中转站（有线接狗 + WiFi 连笔记本）
+**方案**：KICKPI K2B 中转站（有线接狗 + WiFi 连笔记本）
 
 ```
-笔记本 ──WiFi──> 香橙派（中转）──网线──> 狗
+笔记本 ──WiFi──> K2B（中转）──网线──> 狗
 ```
 
-**原理**：香橙派只做网络层透传，不跑业务代码。AI机台的所有指令和视频流经过香橙派转发，最终对狗和 AI机台来说，就像网线直连一样。
+**原理**：K2B 只做网络层透传，不跑业务代码。AI机台的所有指令和视频流经过 K2B 转发，最终对狗和 AI机台来说，就像网线直连一样。
 
-**状态**：硬件未采购，方案待验证。
+**状态**：硬件已下单（4GB+32GB 全志 H618），待到货验证。
 
 ---
 
@@ -503,6 +534,19 @@ npx tauri build
 - 必须在 `(venv)` 虚拟环境下运行后端
 - 不要在 `(base)` conda 环境下运行
 
+### 7. VLM 调用失败
+
+- 检查 `.env` 里 `DASHSCOPE_API_KEY` 和 `VLM_MODEL`
+- 模型名必须用 `qwen3-vl-plus`（旧名 `qwen-vl-plus` 会报 Model not exist）
+- 测试网络：`curl https://dashscope.aliyuncs.com`
+
+### 8. 后端检测到了但前端不弹窗
+
+- 看前端 Console 有没有 `🔍 异常检测轮询已启动`
+- 看 Network 有没有 `/api/detection/anomaly` 请求
+- 看 `backendBase` 是否为空（WebSocket 没连上）
+- 使用右下角 `DetectionDebug` 面板查看轮询状态
+
 ---
 
 ## 📌 开发路线图
@@ -512,7 +556,6 @@ npx tauri build
 - [x] 机器狗控制接口（模拟）
 - [x] 机器狗控制接口（真机有线 DDS）
 - [x] ArUco 标记识别
-- [x] 异常检测（颜色检测占位）
 - [x] mDNS 自动发现（Tauri + Rust）
 - [x] 非全屏弹窗 + 声音 + 确认
 - [x] 全屏弹幕 + 频闪 + ESC 确认
@@ -522,12 +565,16 @@ npx tauri build
 - [x] 时间水印 + REC 标识
 - [x] 录制 + 下载
 - [x] Windows 打包（GitHub Actions）
+- [x] VLM 云端检测接入（千问 qwen3-vl-plus）
+- [x] 三路检测器架构（preset / yolo / vlm）
+- [x] 异常自动推送（不依赖前端轮询）
+- [x] 全链路验证（VLM→推送→弹窗→日志）
 - [ ] 机器狗自带摄像头视频流
 - [ ] 巡检流程真机化（前端发点位 + 后端执行）
-- [ ] YOLO 视觉模型接入
-- [ ] 滴漏数据集采集与训练
 - [ ] 异常截图 + 红框标注
-- [ ] 无线方案（香橙派中转站）
+- [ ] KICKPI K2B 到货后部署验证
+- [ ] ArUco 铭牌设计打印
+- [ ] 无线方案（K2B 中转站）
 - [ ] 场地道具与演示准备
 
 ---
