@@ -1,8 +1,9 @@
 # app/services/camera_service.py
-# 📁 摄像头服务
-# 职责：单例 + 后台采集狗自带摄像头 + 发布订阅，各消费者独立队列
+# 📁 摄像头服务 (K2B 网关版)
+# 职责：单例 + 后台采集 K2B 透传的 MJPEG 流 + 发布订阅
 
 import cv2
+import os
 import time
 import queue
 import threading
@@ -28,8 +29,9 @@ class CameraService:
         if getattr(self, "_initialized", False):
             return
 
+        # 兼容原参数，K2B 网关模式下不需要本地网卡直连狗
         self.network_interface = network_interface
-        self._video_client = None
+        self._cap = None  # OpenCV 的 VideoCapture 对象
         self._is_running = False
 
         self._latest_frame: Optional[np.ndarray] = None
@@ -48,27 +50,32 @@ class CameraService:
         if self._is_running:
             return True
 
-        # 初始化 VideoClient（连接狗自带摄像头）
+        # 1. 从环境变量读取 K2B 的 IP
+        k2b_ip = os.getenv("K2B_IP", "192.168.62.240")
+        stream_url = f"http://{k2b_ip}:8000/api/camera/video"
+        
+        print(f"📷 尝试连接 K2B 视频流: {stream_url}...")
+        
         try:
-            from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-            from unitree_sdk2py.go2.video.video_client import VideoClient
-
-            print(f"📷 初始化 VideoClient（网卡: {self.network_interface}）...")
-            ChannelFactoryInitialize(0, self.network_interface)
-
-            self._video_client = VideoClient()
-            self._video_client.SetTimeout(1.0)
-            self._video_client.Init()
-            print("✅ VideoClient 初始化成功")
+            # 2. 使用 OpenCV 的原生网络流功能拉取 MJPEG
+            self._cap = cv2.VideoCapture(stream_url)
+            
+            # 设置缓冲区大小，减少延迟
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
+            if not self._cap.isOpened():
+                print("❌ 无法打开 K2B 视频流，请检查网关是否启动、IP 是否正确")
+                return False
+            
+            print("✅ 成功连接 K2B 视频流")
         except Exception as e:
-            print(f"❌ VideoClient 初始化失败: {e}")
+            print(f"❌ 初始化视频流异常: {e}")
             return False
 
         self._stop_flag.clear()
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
         self._is_running = True
-        print("✅ CameraService: 狗摄像头已启动")
         return True
 
     def stop(self):
@@ -77,12 +84,17 @@ class CameraService:
         self._stop_flag.set()
         if self._thread:
             self._thread.join(timeout=3)
-        self._video_client = None
+        
+        # 释放 OpenCV 网络流
+        if self._cap:
+            self._cap.release()
+            self._cap = None
+            
         self._is_running = False
         self._thread = None
-        print("🛑 CameraService: 狗摄像头已停止")
+        print("🛑 CameraService: K2B 视频流已断开")
 
-    # ========== 订阅接口 ==========
+    # ========== 订阅接口（保持不变） ==========
 
     def subscribe(self, name: str, maxsize: int = 2) -> queue.Queue:
         with self._sub_lock:
@@ -96,34 +108,25 @@ class CameraService:
             self._subscribers.pop(name, None)
         print(f"📤 CameraService: '{name}' 已取消订阅")
 
-    # ========== 采集循环 ==========
+    # ========== 采集循环（核心改动） ==========
 
     def _capture_loop(self):
-        """从狗自带摄像头拉帧"""
+        """从 K2B 网络流拉帧"""
         while not self._stop_flag.is_set():
-            if self._video_client is None:
+            if self._cap is None or not self._cap.isOpened():
                 break
 
             try:
-                # GetImageSample 返回 (ret, data)
-                # ret == 0 成功，data 是 JPEG 字节（可能是 list 或 bytes）
-                ret, data = self._video_client.GetImageSample()
-                if ret != 0 or data is None:
-                    time.sleep(0.02)
+                # OpenCV 自动在底层处理 MJPEG 解析，直接返回 BGR 帧
+                ret, frame = self._cap.read()
+                
+                if not ret or frame is None:
+                    # 网络波动或没拿到帧，稍微歇一下防死循环
+                    time.sleep(0.05)
                     continue
 
-                # data 可能是 list，转成 bytes
-                if isinstance(data, list):
-                    data = bytes(data)
-
-                # JPEG 解码为 numpy array
-                img_array = np.frombuffer(data, dtype=np.uint8)
-                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                if frame is None:
-                    time.sleep(0.02)
-                    continue
             except Exception as e:
-                print(f"⚠️ CameraService 取帧失败: {e}")
+                print(f"⚠️ CameraService 拉流失败: {e}")
                 time.sleep(0.1)
                 continue
 
@@ -131,7 +134,7 @@ class CameraService:
             with self._frame_lock:
                 self._latest_frame = frame
 
-            # 广播给订阅者
+            # 广播给订阅者（MJPEG/录制/检测）
             with self._sub_lock:
                 subscribers = list(self._subscribers.items())
 
@@ -144,8 +147,11 @@ class CameraService:
                         q.put_nowait(frame.copy())
                     except (queue.Empty, queue.Full):
                         pass
+            
+            # 控制帧率，K2B 是 15Hz，这里稍微限制一下，防止 CPU 空转
+            time.sleep(1 / 15)
 
-    # ========== 兼容旧接口 ==========
+    # ========== 兼容旧接口（保持不变） ==========
 
     def read_frame(self) -> Optional[np.ndarray]:
         with self._frame_lock:
@@ -188,5 +194,5 @@ class CameraService:
         return self._is_running
 
 
-# 全局单例（网卡名按实际情况改）
+# 全局单例（K2B 模式下 network_interface 参数不再影响主逻辑）
 camera_service = CameraService(network_interface="enp2s0")
