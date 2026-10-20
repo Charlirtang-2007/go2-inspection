@@ -20,40 +20,26 @@
 
 ## 🏗️ 系统架构
 
-```
-┌─────────────────┐     WebSocket/HTTP     ┌─────────────────┐
-│  笔记本 (前端)   │ ─────────────────────> │  AI机台 (后端)   │
-│  Tauri 桌面应用  │ <───────────────────── │  FastAPI 服务    │
-│  SvelteKit 内核  │     视频流/状态数据     │                 │
-└─────────────────┘                        └─────────────────┘
-                                                    │
-                                                    │ 网线直连 (DDS)
-                                                    ▼
-                                            ┌─────────────────┐
-                                            │  机器狗 Go2 X    │
-                                            │  执行 + 采集     │
-                                            └─────────────────┘
+为了突破传统网线直连的物理限制，本项目采用 **「前端 - 主控 - 边缘网关 - 机器狗」** 的四级解耦架构。
 
 ```
-### K2B边缘中继器
-```
 ┌─────────────────┐     WebSocket/HTTP     ┌─────────────────┐
 │  笔记本 (前端)   │ ─────────────────────> │  AI机台 (后端)   │
 │  Tauri 桌面应用  │ <───────────────────── │  FastAPI 服务    │
-│  SvelteKit 内核  │     视频流/状态数据     │                 │
+│  SvelteKit 内核  │     视频流/状态数据     │ (AI检测/录制/通知)│
 └─────────────────┘                        └─────────────────┘
          │                                          │
          │ WiFi                                     │ WiFi
-         │（手机热点）                               │（手机热点）
+         │（手机热点/局域网）                       │（手机热点/局域网）
          │                                          │
          └──────────────┬───────────────────────────┘
                         │
-                        │ 同一局域网
+                        │ 同一局域网 HTTP 通信
                         ▼
                 ┌─────────────────┐
                 │  K2B (边缘网关)  │
                 │  unitree_sdk2py │
-                │  HTTP/WS 转发   │
+                │  FastAPI 转发   │
                 └─────────────────┘
                         │
                         │ 网线直连 (DDS)
@@ -69,52 +55,39 @@
 | 设备 | 角色 | 运行内容 |
 | :--- | :--- | :--- |
 | **笔记本** | 前端展示 | Tauri 桌面应用、视频显示、指令下发、告警弹窗 |
-| **AI机台 (Ubuntu)** | 后端服务 | FastAPI + WebSocket + 视频流 + AI检测 + 通知 + 录制 |
+| **AI机台 (Ubuntu)** | 主控后端 | FastAPI + WebSocket + VLM检测 + 通知 + 录制 |
+| **K2B (全志H618)** | 边缘网关 | 跑 `unitree_sdk2py`，负责 DDS 协议与 HTTP/WS 的透传转发 |
 | **机器狗 Go2 X** | 执行终端 | 运动控制、摄像头采集 |
 
 ### 通信方式
 
 | 链路 | 协议 | 说明 |
 | :--- | :--- | :--- |
-| 前端 ↔ 后端 | WebSocket | 指令、状态实时双向 |
-| 前端 ↔ 后端 | HTTP | 视频流、快照、REST API |
-| 前端 → 后端 | mDNS | Rust 端自动发现后端地址 |
-| 后端 ↔ 机器狗 | DDS | 网线直连（已验证） |
-| 后端 ↔ 机器狗 | WebRTC | WiFi 无线（待研究，需 AES 密钥） |
+| 前端 ↔ AI机台 | WebSocket / HTTP | 指令、状态实时双向、视频流拉取 |
+| 前端 → AI机台 | mDNS | Rust 端自动发现后端地址 |
+| AI机台 ↔ K2B | HTTP (REST / MJPEG) | 跨网络控制与视频流透传 |
+| K2B ↔ 机器狗 | DDS | 网线直连，同一 `192.168.123.x` 网段 |
+| 后端 → 手机 | HTTPS | PushPlus / 企业微信异常推送 |
 
 ---
 
 ## 🛠️ 技术栈
 
 ### 前端
+- **SvelteKit** 2.x + **TypeScript** + **TailwindCSS**
+- **Tauri** 2.x + **Rust** (负责 mDNS 局域网发现)
 
-| 技术 | 版本 | 说明 |
-| :--- | :--- | :--- |
-| **SvelteKit** | 2.x | 现代 SPA 框架 |
-| **TypeScript** | 5.x | 类型安全 |
-| **TailwindCSS** | 3.x | 原子化 CSS |
-| **Tauri** | 2.x | 桌面应用打包 |
-| **Rust** | 1.7x | mDNS 发现（Tauri 内核） |
+### 后端 (AI机台)
+- **Python** 3.10+ + **FastAPI** + **Uvicorn**
+- **OpenCV** (视频流处理与录制) + **requests** (与K2B通信)
+- **阿里云百炼 (千问 `qwen3-vl-plus`)**：云端 VLM 视觉识别
+- **WebSocket** / **zeroconf**
 
-### 后端
-
-| 技术 | 版本 | 说明 |
-| :--- | :--- | :--- |
-| **Python** | 3.10+ | 运行时 |
-| **FastAPI** | - | Web 框架 |
-| **Uvicorn** | - | ASGI 服务器 |
-| **OpenCV** | - | 图像处理、视频录制 |
-| **WebSocket** | - | 实时通信 |
-| **zeroconf** | - | mDNS 广播 |
-| **unitree_sdk2py** | - | 官方 SDK（网线直连 DDS） |
-
-### 外部服务
-
-| 服务 | 用途 |
-| :--- | :--- |
-| **PushPlus** | 异常推送到微信 |
-| **企业微信机器人** | 异常推送到工作群 |
-| **阿里云百炼（千问）** | VLM 视觉大模型，识别烟雾/火焰/滴漏 |
+### 边缘网关 (K2B)
+- **Ubuntu 22.04 Server** (ARM64)
+- **CycloneDDS 0.10.x** (源码编译)
+- **unitree_sdk2py** + **FastAPI** + **uvicorn**
+- **systemd** (开机自启常驻服务)
 
 ---
 
@@ -124,122 +97,60 @@
 
 | 模块 | 状态 | 说明 |
 | :--- | :--- | :--- |
+| **K2B 边缘网关** | ✅ | 跨网络 HTTP 控狗，MJPEG 视频流透传，systemd 开机自启 |
+| **全向控制** | ✅ | 站立、趴下、前进、后退、左转、右转、停止 |
 | 前后端通信 | ✅ | WebSocket 实时双向通信 |
-| mDNS 自动发现 | ✅ | Rust 端自动发现后端，无需手动配 IP |
-| 视频流服务 | ✅ | MJPEG 流，浏览器实时显示 |
-| 视频全屏 + 画中画 | ✅ | 支持全屏、独立小窗 |
-| 时间水印 + REC 标识 | ✅ | 视频叠加实时时间戳和录制状态 |
-| 机器狗真机控制（有线） | ✅ | 基于 unitree_sdk2py，网线直连，基础指令已通 |
-| 模拟模式 | ✅ | 无硬件时可切换 `USE_MOCK_ROBOT=true` |
-| 状态监控 | ✅ | 电量、任务、在线状态实时更新 |
-| 巡检日志 | ✅ | 实时日志滚动显示 |
-| ArUco 识别 | ✅ | 起点/终点/区域标识识别 |
-| **VLM 云端检测** | ✅ | 千问 `qwen3-vl-plus`，识别烟雾，实测置信度 0.85+ |
-| **三路检测器架构** | ✅ | preset / yolo / vlm，环境变量 `DETECTION_ENGINE` 切换 |
+| mDNS 自动发现 | ✅ | 前端 Rust 端自动发现后端 |
+| **三路检测器架构** | ✅ | preset (兜底) / yolo (本地) / vlm (云端)，环境变量切换 |
+| **VLM 云端检测** | ✅ | 千问 `qwen3-vl-plus`，实测识别烟雾置信度 0.85+ |
 | **异常自动推送** | ✅ | 后端 worker 状态翻转直接触发，不依赖前端轮询 |
-| 非全屏告警弹窗 | ✅ | 弹窗 + 声音 + 手动确认 |
-| 全屏告警 | ✅ | 弹幕 + 频闪 + ESC 自动确认 |
-| 告警来源隔离 | ✅ | 弹窗和弹幕互不干扰 |
-| 异常通知推送 | ✅ | PushPlus + 企业微信双通道 |
-| 巡检录制 | ✅ | 自动录制、时间戳烧录、保留最近 5 个 |
-| 录制下载 | ✅ | 列表 + 下载接口 |
-| Windows 打包 | ✅ | GitHub Actions 自动构建 |
+| 视频流服务 | ✅ | MJPEG 流，支持全屏、画中画、时间水印、REC 标识 |
+| 告警系统 | ✅ | 全屏弹幕/频闪 + 非全屏弹窗 + 声音 + 手动确认 + 来源隔离 |
+| 巡检录制 | ✅ | 自动录制、时间戳烧录、保留最近 5 个、前端下载 |
+| Windows 打包 | ✅ | GitHub Actions 自动构建安装包 |
 
-### 🚧 待接入
+### 🚧 待接入 / 待办
 
 | 模块 | 说明 |
 | :--- | :--- |
-| 机器狗自带摄像头视频流 | 当前使用外接 USB 摄像头，待接入狗自带摄像头 |
-| YOLO 本地模型 | 已接入但作为备用，主力为 VLM |
-| 巡检流程真机化 | 当前前端模拟，待改为"前端发点位 + 后端执行" |
-| 无线控制方案 | KICKPI K2B 板子已下单，待到货验证 |
-| 异常截图 + 红框标注 | VLM 无 bbox，preset 使用 ArUco bbox 画框 |
-| 日志文件生成 | 巡检日志导出（JSON + 图片 + ZIP） |
-| ArUco 铭牌设计打印 | 起点/A区/B区/终点 A5 铭牌 |
+| 异常截图前端展示 | 后端已保存 jpg，前端需接入图片展示 (带红框) |
+| 演示流程真机化 | 前端发点位 -> 后端执行 (结合 ArUco 点位与复检逻辑) |
+| 日志文件生成 | 巡检日志导出为 JSON + 图片打包 ZIP |
+| ArUco 铭牌设计打印 | 制作 A5 铭牌贴在场地，并实现识别联动 |
+| 赛场防掉电保护 | K2B 开启 Overlayroot (防止直接断电导致系统损坏) |
 
 ---
 
 ## 📁 项目结构
 
-```
+```text
 go2-inspection/
-├── .github/
-│   └── workflows/
-│       └── build.yml              # GitHub Actions 自动构建
-│
-├── frontend/                       # 前端 (SvelteKit + Tauri)
+├── .github/workflows/build.yml # GitHub Actions 自动构建
+├── frontend/                   # 前端 (SvelteKit + Tauri)
 │   ├── src/
-│   │   ├── routes/
-│   │   │   ├── +page.svelte       # 主控制台页面
-│   │   │   ├── +layout.svelte     # 全局布局
-│   │   │   └── +layout.ts         # SPA 配置
+│   │   ├── routes/+page.svelte
 │   │   └── lib/
-│   │       ├── components/
-│   │       │   ├── VideoStream.svelte      # 视频 + 全屏 + 画中画 + 水印
-│   │       │   ├── StatusPanel.svelte      # 状态面板
-│   │       │   ├── LogViewer.svelte        # 日志展示
-│   │       │   ├── AlertModal.svelte       # 非全屏告警弹窗
-│   │       │   ├── FullscreenAlert.svelte  # 全屏弹幕 + 频闪
-│   │       │   ├── RecordingList.svelte    # 录制文件列表
-│   │       │   ├── DetectionDebug.svelte   # 轮询调试面板
-│   │       │   └── AlertTester.svelte      # 测试面板（dev 专用）
-│   │       ├── services/
-│   │       │   ├── websocket.ts            # WebSocket 封装
-│   │       │   ├── discovery.ts            # mDNS 发现调用
-│   │       │   └── detection.ts            # 异常轮询
-│   │       └── stores/
-│   │           ├── robot.ts                # 机器狗状态
-│   │           ├── log.ts                  # 日志
-│   │           └── alert.ts                # 告警 + 来源隔离
-│   ├── src-tauri/                 # Tauri 桌面应用
-│   │   ├── src/
-│   │   │   └── lib.rs             # Rust mDNS 命令
-│   │   └── tauri.conf.json
-│   ├── static/
-│   │   ├── logo.png
-│   │   └── sounds/
-│   │       └── alarm.mp3          # 报警音
-│   └── package.json
-│
-└── backend/                        # 后端 (FastAPI)
+│   │       ├── components/     # VideoStream, AlertModal, DetectionDebug...
+│   │       ├── services/       # websocket.ts, discovery.ts, detection.ts
+│   │       └── stores/         # robot.ts, log.ts, alert.ts
+│   └── src-tauri/              # Rust mDNS 命令
+└── backend/                    # 主控后端 (FastAPI)
     ├── app/
-    │   ├── main.py                # FastAPI 入口 + WebSocket + 巡检指令
-    │   ├── routers/
-    │   │   ├── robot.py           # 机器狗控制
-    │   │   ├── camera.py          # 视频流 + 快照
-    │   │   ├── detection.py       # ArUco + 异常检测接口
-    │   │   ├── route.py           # 路线管理
-    │   │   └── recording.py       # 录制控制 + 列表 + 下载
+    │   ├── main.py             # 入口 + WebSocket
+    │   ├── routers/            # robot, camera, detection, route, recording
     │   ├── services/
-    │   │   ├── camera_service.py        # 摄像头单例 + 后台采集 + 发布订阅
-    │   │   ├── recording_service.py     # 录制 + 时间戳 + 文件保留
+    │   │   ├── camera_service.py        # 拉取K2B视频流 + 发布订阅
     │   │   ├── detection_service.py     # 三路检测调度 + worker + 事件回调
+    │   │   ├── robot_real.py            # 通过 requests 发指令给 K2B
     │   │   ├── notification_service.py  # PushPlus + 企业微信
-    │   │   ├── robot_interface.py       # 抽象接口
-    │   │   ├── robot_mock.py            # 模拟实现
-    │   │   ├── robot_real.py            # 真机实现（有线 DDS）
-    │   │   ├── robot_factory.py         # 工厂函数
-    │   │   └── detectors/               # 检测器目录
-    │   │       ├── __init__.py
-    │   │       ├── yolo_detector.py     # 本地 YOLO（备用）
-    │   │       ├── vlm_detector.py      # 云端千问（主力）
-    │   │       └── preset_detector.py   # 预设兜底（ArUco 触发）
+    │   │   └── detectors/               # yolo_detector, vlm_detector, preset_detector
     │   ├── models/
-    │   │   ├── robot.py           # Command / RobotStatus
-    │   │   └── route.py           # RoutePlan
     │   └── utils/
-    │       ├── mdns_service.py          # mDNS 广播
-    │       └── websocket_manager.py     # WS 连接池
-    ├── data/
-    │   └── routes.json            # 路线数据
-    ├── recordings/                # 录制文件输出（gitignore）
-    ├── models/
-    │   └── smoke.pt               # YOLO 模型文件（备用）
-    ├── .env                       # 敏感配置（gitignore）
-    ├── .env.example               # 环境变量模板
-    ├── requirements.txt
-    ├── deploy.sh                  # AI机台部署脚本
+    ├── models/smoke.pt         # YOLO 备用模型
+    ├── .env.example
     └── run.py
+
+# 边缘网关脚本 (存放在 K2B 的 /home/kickpi/gateway.py)
 ```
 
 ---
@@ -247,334 +158,68 @@ go2-inspection/
 ## 🚀 快速开始
 
 ### 前置要求
+- **K2B**：已烧录 Ubuntu 22.04 Server，已编译 DDS，已配好 `gateway.py` 并设为 systemd 服务。
+- **AI机台**：Ubuntu 22.04，Python 3.10+，安装了 `requests` 和 `opencv-python`。
+- **笔记本**：Node.js 18+，前端打包后可直接双击 exe 运行。
+- **网络**：三台设备处于同一局域网（推荐使用稳定的手机热点或随身 WiFi）。
 
-- **AI机台**：Ubuntu 22.04，Python 3.10+
-- **笔记本**：Node.js 18+，npm（开发时）/ 直接安装打包好的 exe（比赛时）
-- **网络**：两台设备处于**同一局域网**（路由器或手机热点）
-- **真机模式**：Go2 X 用网线连接 AI 机台
-
-### 后端启动（AI机台）
-
-#### 首次部署
-
+### 1. K2B 网关启动 (开机自启)
+K2B 联网后，连上狗，直接插电开机。网关已配置为 systemd 服务，会自动运行。
+检查状态：
 ```bash
-# 1. 进入后端目录
+systemctl status go2-gateway.service
+```
+
+### 2. AI机台部署与启动
+```bash
 cd go2-inspection/backend
+source venv/bin/activate
+pip install -r requirements.txt
 
-# 2. 执行部署脚本（自动完成系统依赖 + CycloneDDS + venv + pip）
-./deploy.sh
-
-# 3. 复制并编辑 .env（通知服务凭证 + VLM 密钥）
-cp .env.example .env
+# 关键配置 .env
 vim .env
 ```
-
-`.env` 关键配置：
-
+`.env` 必备项：
 ```bash
-# 机器人连接
-USE_MOCK_ROBOT=false
-ROBOT_NETWORK_INTERFACE=enp2s0
-
-# 检测引擎：yolo / vlm / preset / 组合
-DETECTION_ENGINE=vlm
-DETECTION_INTERVAL=2.0
-
-# VLM（千问）
-DASHSCOPE_API_KEY=sk-你的key
-VLM_MODEL=qwen3-vl-plus
-
-# 通知
-PUSHPLUS_TOKEN=你的PushPlus_Token
-WECOM_WEBHOOK=你的企业微信Webhook
+K2B_IP=192.168.62.240     # K2B 的局域网 IP
+DETECTION_ENGINE=vlm      # 默认使用云端千问进行检测
+DASHSCOPE_API_KEY=sk-xxx  # 千问 API Key
+PUSHPLUS_TOKEN=xxx        # 微信推送
+WECOM_WEBHOOK=xxx         # 企微推送
 ```
-
-> `deploy.sh` 会自动：
-> - 安装 apt 依赖（cmake、git、libssl-dev 等）
-> - 编译 CycloneDDS 到 `~/cyclonedds/install`
-> - 设置 `CYCLONEDDS_HOME` 环境变量
-> - 创建 venv 并安装 `requirements.txt`
-
-#### 启动
-
-**真机模式（网线直连狗）**：
-
+启动后端：
 ```bash
-cd go2-inspection/backend
-source venv/bin/activate
-
-# 配置网卡 IP（网线连狗）
-sudo ip addr add 192.168.123.222/24 dev enp2s0
-sudo ip link set enp2s0 up
-ping 192.168.123.161  # 能通才继续
-
-# 启动
-export CYCLONEDDS_HOME=~/cyclonedds/install
-export USE_MOCK_ROBOT=false
-export ROBOT_NETWORK_INTERFACE=enp2s0
 python run.py
 ```
+*预期日志：`✅ 成功连接 K2B 视频流` 和 `✅ [Real] 成功连接 K2B 边缘网关`。*
 
-**模拟模式（无硬件）**：
-
-```bash
-cd go2-inspection/backend
-source venv/bin/activate
-export USE_MOCK_ROBOT=true
-python run.py
-```
-
-服务启动后：
-- API 文档：`http://<AI机台IP>:8000/docs`
-- 健康检查：`http://<AI机台IP>:8000/health`
-
-### 前端启动（开发模式）
-
-```bash
-cd go2-inspection/frontend
-npm install
-
-# 浏览器开发
-npm run dev
-# 访问 http://localhost:5173
-
-# Tauri 开发
-npm run tauri dev
-```
-
-### 前端启动（比赛模式）
-
-从 GitHub Actions 下载 Windows 安装包，双击安装，从开始菜单启动。**应用会自动通过 mDNS 发现后端，无需配置 IP。**
+### 3. 前端启动
+打开 Tauri 桌面应用，自动通过 mDNS 发现 AI 机台，显示视频流。
 
 ---
 
-## 🔌 API 接口一览
+## ⚠️ 常见问题 (FAQ)
 
-| 方法 | 路径 | 功能 |
-| :--- | :--- | :--- |
-| `GET` | `/api/robot/status` | 获取机器狗状态 |
-| `POST` | `/api/robot/command` | 发送控制指令 |
-| `POST` | `/api/robot/connect` | 连接机器狗 |
-| `POST` | `/api/robot/disconnect` | 断开连接 |
-| `POST` | `/api/robot/emergency_stop` | 紧急停止 |
-| `GET` | `/api/camera/video` | MJPEG 视频流 |
-| `GET` | `/api/camera/snapshot` | 单帧快照 |
-| `GET` | `/api/detection/aruco` | ArUco 标记检测 |
-| `GET` | `/api/detection/anomaly` | 读取最新异常检测结果 |
-| `POST` | `/api/detection/trigger_preset` | 手动触发预设异常 |
-| `POST` | `/api/detection/clear_preset` | 清除预设异常 |
-| `GET` | `/api/route/list` | 路线列表 |
-| `GET` | `/api/route/default` | 默认路线 |
-| `POST` | `/api/route/save` | 保存路线 |
-| `POST` | `/api/route/confirm` | 确认路线 |
-| `POST` | `/api/recording/start` | 开始录制 |
-| `POST` | `/api/recording/stop` | 停止录制 |
-| `GET` | `/api/recording/status` | 录制状态 |
-| `GET` | `/api/recording/list` | 录制文件列表 |
-| `GET` | `/api/recording/download/{filename}` | 下载录制文件 |
-| `WS` | `/ws` | WebSocket 实时通信 |
+### 1. AI机台报错 `ModuleNotFoundError: No module named 'requests'`
+- 在 AI机台的虚拟环境中执行：`pip install requests`。
 
----
+### 2. AI机台无法连接 K2B 视频流
+- 检查 AI机台是否可以 `ping K2B_IP`。
+- SSH 登录 K2B，查看网关状态：`systemctl status go2-gateway.service`。
+- 确保 K2B 的网线连着狗，且狗已开机。
 
-## 📡 WebSocket 消息格式
+### 3. K2B 编译 SDK 时找不到 `Python.h`
+- 在 K2B 上执行：`sudo apt install python3-dev`，然后重新 `pip3 install -e .`。
 
-### 客户端 → 服务端
+### 4. 控狗按钮部分失效
+- 检查 K2B 上的 `gateway.py`，确认指令映射（如 `left`, `right`, `backward`）是否在 `SportClient` 中正确调用了对应的接口（`Move`）。
 
-```json
-{
-  "type": "command",
-  "data": { "cmd": "forward" }
-}
-```
+### 5. VLM 调用报错 `Model not exist`
+- 检查 `.env` 中 `VLM_MODEL=qwen3-vl-plus` 是否拼写正确。
 
-**运动指令**：`forward` / `backward` / `left` / `right` / `stop` / `standup` / `sit`
-
-**巡检指令**：`start_inspection`（开始巡检 + 启动录制）/ `stop_inspection`（结束巡检 + 停止录制）/ `emergency_stop`（急停 + 停止录制）
-
-### 服务端 → 客户端
-
-```json
-{
-  "type": "command_ack",
-  "data": {
-    "cmd": "forward",
-    "status": "executed",
-    "detail": {
-      "success": true,
-      "action": "move",
-      "velocity": [0.3, 0, 0]
-    }
-  }
-}
-```
-
----
-
-## 🔔 告警系统
-
-### 触发链（新版）
-
-```
-后端 detection_service worker 每 2 秒检测
-    ↓
-检测到异常（VLM 返回 has_smoke: true）
-    ↓
-状态翻转 false→true
-    ↓
-on_anomaly 回调 → notification_service
-    ├── PushPlus 推送
-    └── 企业微信推送
-    ↓
-同时写入 _latest_result
-    ↓
-前端轮询读到 → 弹窗 + 日志
-```
-
-**关键变化**：推送不再依赖前端轮询，后端检测到就推。
-
-### 告警来源隔离
-
-| 来源 | 展示通道 | 确认方式 |
-| :--- | :--- | :--- |
-| 非全屏产生 | Modal 弹窗 | 点"已知晓"按钮 |
-| 全屏产生 | 弹幕 + 频闪 | 按 ESC 退出全屏自动确认 |
-
-两个通道互不干扰。
-
----
-
-## 🎬 录制系统
-
-### 触发时机
-
-| 事件 | 动作 |
-| :--- | :--- |
-| 开始巡检 | `recording_service.start()` |
-| 巡检完成 | `recording_service.stop()` |
-| 紧急停止 | `recording_service.stop()` |
-
-### 录制特性
-
-- 分辨率：1280×720
-- 帧率：25 fps
-- 时间戳：烧录在左上角
-- 保留策略：最近 5 个文件
-
-### 文件位置
-
-```
-backend/recordings/
-├── 20260921_153045_inspection.mp4
-├── 20260921_162030_inspection.mp4
-└── ...
-```
-
----
-
-## 🐕 机器狗接入指南
-
-### 网线直连模式（已支持）
-
-1. 用网线连接机器狗与 AI 机台
-2. AI 机台有线网卡 IP 设为 `192.168.123.222`
-3. 验证连通：`ping 192.168.123.161`
-4. 启动后端时设置：
-   ```bash
-   export USE_MOCK_ROBOT=false
-   export ROBOT_NETWORK_INTERFACE=enp2s0
-   export CYCLONEDDS_HOME=~/cyclonedds/install
-   ```
-
-### WiFi 无线模式（规划中）
-
-**方案**：KICKPI K2B 中转站（有线接狗 + WiFi 连笔记本）
-
-```
-笔记本 ──WiFi──> K2B（中转）──网线──> 狗
-```
-
-**原理**：K2B 只做网络层透传，不跑业务代码。AI机台的所有指令和视频流经过 K2B 转发，最终对狗和 AI机台来说，就像网线直连一样。
-
-**状态**：硬件已下单（4GB+32GB 全志 H618），待到货验证。
-
----
-
-## 📦 打包与部署
-
-### 自动构建（GitHub Actions）
-
-推送代码到 `develop` 分支后，GitHub Actions 自动构建 Windows 安装包：
-
-```
-https://github.com/Charlirtang-2007/go2-inspection/actions
-```
-
-构建产物：
-- `go2-inspection-windows-xxxxx.zip`
-  - `msi/Go2智能巡检_0.1.0_x64_zh-CN.msi`
-  - `nsis/Go2智能巡检_0.1.0_x64-setup.exe`
-
-### 手动构建
-
-```bash
-cd frontend
-npm install -D @tauri-apps/cli@latest
-npx tauri build
-```
-
----
-
-## ⚠️ 常见问题
-
-### 1. 前端视频流不显示
-
-- 确认后端 `/api/camera/video` 可访问
-- 检查浏览器 F12 控制台，查看是否有 CORS 或网络错误
-- 确认摄像头被 `camera_service` 正确持有（后端启动时应有 `✅ CameraService: 狗摄像头已启动`）
-
-### 2. WebSocket 连接失败
-
-- 确认 AI机台防火墙：`sudo ufw allow 8000`
-- 在浏览器控制台测试：
-  ```javascript
-  new WebSocket('ws://<AI机台IP>:8000/ws')
-  ```
-
-### 3. mDNS 发现失败
-
-- 确认 AI机台 和后端在同一局域网
-- 手机热点可能开启客户端隔离，换路由器
-- 检查 5353/udp 端口：`sudo ufw allow 5353/udp`
-
-### 4. DDS 初始化失败
-
-- 确认 `CYCLONEDDS_HOME` 环境变量已设
-- 确认 `libddsc.so` 存在：`ls $CYCLONEDDS_HOME/lib/`
-- 确认 `ChannelFactoryInitialize` 传入的网卡名正确
-
-### 5. 告警通知收不到
-
-- 检查 `.env` 里的 `PUSHPLUS_TOKEN` 和 `WECOM_WEBHOOK`
-- 检查后端终端日志是否有 `✅ PushPlus 已发送`
-- 同一异常 5 分钟冷却，测试时改 `notification_service.py` 里 `self.cooldown = 0`
-
-### 6. 环境混乱
-
-- 必须在 `(venv)` 虚拟环境下运行后端
-- 不要在 `(base)` conda 环境下运行
-
-### 7. VLM 调用失败
-
-- 检查 `.env` 里 `DASHSCOPE_API_KEY` 和 `VLM_MODEL`
-- 模型名必须用 `qwen3-vl-plus`（旧名 `qwen-vl-plus` 会报 Model not exist）
-- 测试网络：`curl https://dashscope.aliyuncs.com`
-
-### 8. 后端检测到了但前端不弹窗
-
-- 看前端 Console 有没有 `🔍 异常检测轮询已启动`
-- 看 Network 有没有 `/api/detection/anomaly` 请求
-- 看 `backendBase` 是否为空（WebSocket 没连上）
-- 使用右下角 `DetectionDebug` 面板查看轮询状态
+### 6. K2B 重启后 IP 变了怎么办
+- 建议在路由器/热点管理后台，通过 K2B 的 MAC 地址绑定固定 IP。
+- 或者后续升级 AI机台代码，通过 `zeroconf` (mDNS) 自动发现 `_go2-edge._tcp`。
 
 ---
 
@@ -582,29 +227,24 @@ npx tauri build
 
 - [x] 前后端通信（WebSocket）
 - [x] 视频流服务（MJPEG）
-- [x] 机器狗控制接口（模拟）
-- [x] 机器狗控制接口（真机有线 DDS）
+- [x] 机器狗控制接口（模拟 / 真机直连）
 - [x] ArUco 标记识别
 - [x] mDNS 自动发现（Tauri + Rust）
-- [x] 非全屏弹窗 + 声音 + 确认
-- [x] 全屏弹幕 + 频闪 + ESC 确认
-- [x] 告警来源隔离
+- [x] 告警链路（弹窗/弹幕/声音/来源隔离）
 - [x] 通知推送（PushPlus + 企业微信）
-- [x] 视频全屏 + 画中画
-- [x] 时间水印 + REC 标识
+- [x] 视频全屏 + 画中画 + 时间水印 + REC 标识
 - [x] 录制 + 下载
 - [x] Windows 打包（GitHub Actions）
 - [x] VLM 云端检测接入（千问 qwen3-vl-plus）
 - [x] 三路检测器架构（preset / yolo / vlm）
 - [x] 异常自动推送（不依赖前端轮询）
-- [x] 全链路验证（VLM→推送→弹窗→日志）
-- [x] 机器狗自带摄像头视频流
-- [x] 巡检流程真机化（前端发点位 + 后端执行）
-- [ ] 异常截图 + 红框标注
-- [ ] KICKPI K2B 到货后部署验证
-- [ ] ArUco 铭牌设计打印
-- [ ] 无线方案（K2B 中转站）
-- [ ] 场地道具与演示准备
+- [x] **K2B 边缘网关架构落地（跨网络控狗 + 视频流 + systemd）**
+- [ ] 异常截图前端展示（带红框）
+- [ ] 巡检流程真机化（路线点位 + 复检逻辑）
+- [ ] 日志打包（JSON + ZIP）
+- [ ] ArUco 铭牌打印及现场布置
+- [ ] K2B 防掉电优化（Overlayroot）
+- [ ] 场地道具采购与演练
 
 ---
 
@@ -612,8 +252,7 @@ npx tauri build
 
 - **项目负责**：Charlirtang（项目架构，前后端通信，整个后端）
 - **前端开发**：Forward-going-Yang（前端页面设置，UI 界面美化）
-- **技术栈**：SvelteKit + FastAPI + WebSocket + Tauri
-- **硬件平台**：宇树 Go2 X 可开发版
+- **硬件平台**：宇树 Go2 X 可开发版 + KICKPI K2B (全志 H618)
 
 ---
 
