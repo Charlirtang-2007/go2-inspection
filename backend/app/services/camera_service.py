@@ -1,6 +1,6 @@
 # app/services/camera_service.py
 # 📁 摄像头服务 (K2B 网关版)
-# 职责：单例 + 后台采集 K2B 透传的 MJPEG 流 + 发布订阅
+# 职责：从 K2B 拉取 MJPEG 流，保证视觉模型拿到的是最新、最完整的帧。
 
 import cv2
 import os
@@ -12,7 +12,7 @@ from typing import Optional, Tuple
 
 
 class CameraService:
-    """摄像头服务（单例 + 后台采集 + 订阅分发）"""
+    """摄像头服务（单例 + 后台采集 + 发布订阅）"""
 
     _instance = None
     _instance_lock = threading.Lock()
@@ -29,15 +29,14 @@ class CameraService:
         if getattr(self, "_initialized", False):
             return
 
-        # 兼容原参数，K2B 网关模式下不需要本地网卡直连狗
         self.network_interface = network_interface
-        self._cap = None  # OpenCV 的 VideoCapture 对象
+        self._cap = None 
         self._is_running = False
 
         self._latest_frame: Optional[np.ndarray] = None
         self._frame_lock = threading.Lock()
 
-        # 订阅者：名称 -> 队列
+        # 订阅者字典 {name: Queue}，maxsize默认2，保证队列内只有最新帧
         self._subscribers: dict = {}
         self._sub_lock = threading.Lock()
 
@@ -50,17 +49,14 @@ class CameraService:
         if self._is_running:
             return True
 
-        # 1. 从环境变量读取 K2B 的 IP
-        k2b_ip = os.getenv("K2B_IP", "192.168.62.240")
+        k2b_ip = os.getenv("K2B_IP", "192.168.1.100")
         stream_url = f"http://{k2b_ip}:8000/api/camera/video"
         
         print(f"📷 尝试连接 K2B 视频流: {stream_url}...")
         
         try:
-            # 2. 使用 OpenCV 的原生网络流功能拉取 MJPEG
             self._cap = cv2.VideoCapture(stream_url)
-            
-            # 设置缓冲区大小，减少延迟
+            # [核心] 强制底层只保留1帧，防止FFmpeg内部严重积压导致高延迟
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             
             if not self._cap.isOpened():
@@ -85,7 +81,6 @@ class CameraService:
         if self._thread:
             self._thread.join(timeout=3)
         
-        # 释放 OpenCV 网络流
         if self._cap:
             self._cap.release()
             self._cap = None
@@ -93,8 +88,6 @@ class CameraService:
         self._is_running = False
         self._thread = None
         print("🛑 CameraService: K2B 视频流已断开")
-
-    # ========== 订阅接口（保持不变） ==========
 
     def subscribe(self, name: str, maxsize: int = 2) -> queue.Queue:
         with self._sub_lock:
@@ -108,21 +101,21 @@ class CameraService:
             self._subscribers.pop(name, None)
         print(f"📤 CameraService: '{name}' 已取消订阅")
 
-    # ========== 采集循环（核心改动） ==========
-
     def _capture_loop(self):
-        """从 K2B 网络流拉帧"""
+        """采集循环：防止画面滞后，确保视觉模型拿到最新帧"""
         while not self._stop_flag.is_set():
             if self._cap is None or not self._cap.isOpened():
                 break
 
             try:
-                # OpenCV 自动在底层处理 MJPEG 解析，直接返回 BGR 帧
-                ret, frame = self._cap.read()
+                # [核心] grab() 快速抓取并丢弃底层积压的旧帧，不解码，极快
+                self._cap.grab()
+                
+                # [核心] retrieve() 只解码刚刚抓到的最后一帧，保证画面清晰、实时
+                ret, frame = self._cap.retrieve()
                 
                 if not ret or frame is None:
-                    # 网络波动或没拿到帧，稍微歇一下防死循环
-                    time.sleep(0.05)
+                    time.sleep(0.01)
                     continue
 
             except Exception as e:
@@ -130,11 +123,11 @@ class CameraService:
                 time.sleep(0.1)
                 continue
 
-            # 保存最新帧
+            # 保存最新帧（YOLO/VLM 调 read_frame 时拿到的就是它）
             with self._frame_lock:
                 self._latest_frame = frame
 
-            # 广播给订阅者（MJPEG/录制/检测）
+            # 广播给订阅者
             with self._sub_lock:
                 subscribers = list(self._subscribers.items())
 
@@ -142,27 +135,30 @@ class CameraService:
                 try:
                     q.put_nowait(frame.copy())
                 except queue.Full:
+                    # [核心] 队列满了说明消费者（比如YOLO）处理慢。
+                    # 直接扔掉队首的旧帧，塞入最新帧，绝对不让模型吃“旧饭”。
                     try:
                         q.get_nowait()
                         q.put_nowait(frame.copy())
                     except (queue.Empty, queue.Full):
                         pass
             
-            # 控制帧率，K2B 是 15Hz，这里稍微限制一下，防止 CPU 空转
-            time.sleep(1 / 15)
-
-    # ========== 兼容旧接口（保持不变） ==========
+            # [核心] 限制最高抓取频率为100fps，防CPU空转（100fps远超摄像头实际帧率，不影响实时性）
+            time.sleep(0.01)
 
     def read_frame(self) -> Optional[np.ndarray]:
+        """供视觉模型读取最新画面"""
         with self._frame_lock:
             if self._latest_frame is None:
                 return None
+            # 返回 copy 防止模型在处理时把原图覆盖
             return self._latest_frame.copy()
 
     def get_frame_for_detection(self) -> Optional[np.ndarray]:
         return self.read_frame()
 
     def generate_mjpeg_stream(self, quality: int = 80, resize: Tuple[int, int] = None):
+        """提供前端 Web 显示的 MJPEG 流"""
         if not self.start():
             return
 
@@ -177,10 +173,7 @@ class CameraService:
                 if resize:
                     frame = cv2.resize(frame, resize)
 
-                ret, jpeg = cv2.imencode(
-                    '.jpg', frame,
-                    [cv2.IMWRITE_JPEG_QUALITY, quality]
-                )
+                ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
                 if not ret:
                     continue
 
@@ -194,5 +187,4 @@ class CameraService:
         return self._is_running
 
 
-# 全局单例（K2B 模式下 network_interface 参数不再影响主逻辑）
 camera_service = CameraService(network_interface="enp2s0")
