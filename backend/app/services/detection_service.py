@@ -30,6 +30,20 @@ from pathlib import Path
 
 from app.services.detectors import yolo_detector, vlm_detector, preset_detector
 
+# 在文件顶部的 import 之后加上
+_detection_enabled = False
+
+def enable_detection():
+    global _detection_enabled
+    _detection_enabled = True
+    print("🟢 [Detection] AI 检测已开启！")
+
+def disable_detection():
+    global _detection_enabled
+    _detection_enabled = False
+    print("🔴 [Detection] AI 检测已关闭。")
+
+
 # ============ ArUco 检测（保留不动） ============
 def detect_aruco_markers(frame):
     """检测画面中的 ArUco 标记，返回 [{id, center, size, bbox}, ...]"""
@@ -99,15 +113,6 @@ def _infer(frame):
     annotated = frame.copy()
     has_bbox = False
 
-    # 1. ArUco 检测 → 自动触发 preset
-    markers = detect_aruco_markers(frame)
-    for m in markers:
-        if m["id"] == ARUCO_B_AREA:
-            preset_detector.trigger(
-                area="B",
-                reason="B区异常",
-                bbox=m["bbox"],
-            )
 
     # 2. 三路检测（按 ENGINE 组合）
     if "preset" in ENGINE:
@@ -196,6 +201,10 @@ def stop_worker():
 def _worker_loop(interval):
     global _prev_has
     while not _worker_stop.is_set():
+        # ★ 新增：如果没开启，就不推理，不花钱
+        if not _detection_enabled:
+            time.sleep(0.5)
+            continue
         t0 = time.time()
         try:
             frame = _frame_source() if _frame_source else None
