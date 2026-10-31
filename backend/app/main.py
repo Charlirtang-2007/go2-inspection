@@ -16,6 +16,13 @@ from app.services.recording_service import recording_service
 from app.services import detection_service
 from app.services.notification_service import notification_service
 from app.utils.mdns_service import MDNSService
+from pydantic import BaseModel
+
+# 引入我们的巡检剧本模块
+import app.services.run_inspection as inspection_module
+
+# 全局变量，记录后台线程
+inspection_thread = None
 
 mdns = MDNSService(port=8000)
 
@@ -206,3 +213,31 @@ async def root():
             "/ws": "WebSocket 连接",
         },
     }
+
+@app.post("/api/inspection/start")
+async def start_inspection():
+    """前端点击“开始巡检”调用的接口"""
+    global inspection_thread
+    if inspection_thread is not None and inspection_thread.is_alive():
+        return {"success": False, "msg": "巡检任务正在执行中，请勿重复启动！"}
+    
+    # 重置急停标志
+    inspection_module.FORCE_STOP = False
+    
+    # 使用后台线程跑，接口瞬间返回，绝不阻塞视频流
+    def run_task():
+        try:
+            inspection_module.main()
+        except Exception as e:
+            print(f"❌ 巡检异常中断: {e}")
+            
+    inspection_thread = threading.Thread(target=run_task, daemon=True)
+    inspection_thread.start()
+    
+    return {"success": True, "msg": "巡检任务已启动"}
+
+@app.post("/api/inspection/stop")
+async def stop_inspection():
+    """前端点击“紧急停止”调用的接口"""
+    inspection_module.FORCE_STOP = True
+    return {"success": True, "msg": "急停指令已下发"}

@@ -1,10 +1,12 @@
 import { writable } from 'svelte/store';
 import { robotStore } from '$lib/stores/robot';
 import { logStore } from '$lib/stores/log';
+import { alertStore } from '$lib/stores/alert'; // ★ 新增：用于处理报警弹窗
 import { discoverBackend, clearBackendCache } from '$lib/services/discovery';
 
 type WSMessage = {
-  type: 'status_update' | 'log' | 'command_ack' | 'subscribed' | 'error';
+  // ★ 新增：补充后端推流类型
+  type: 'status_update' | 'log' | 'command_ack' | 'subscribed' | 'error' | 'inspection_log' | 'inspection_alert' | 'tts_play';
   data?: any;
   topics?: string[];
   message?: string;
@@ -82,12 +84,6 @@ class WebSocketService {
         break;
       }
 
-      // ============================================================
-      // command_ack 处理
-      // ============================================================
-      // 成功时不写日志，避免方向键高频刷屏导致重渲染卡顿。
-      // 失败时必须写日志，否则用户看不到"指令为什么没反应"。
-      // ============================================================
       case 'command_ack': {
         const data = msg.data;
         if (!data) break;
@@ -100,6 +96,49 @@ class WebSocketService {
             level,
             message: `指令 ${data.cmd} 失败: ${reason}`
           }, ...logs].slice(0, 100));
+        }
+        break;
+      }
+
+      // ★★★ 以下为新增的巡检业务推送处理 ★★★
+
+      case 'inspection_log': {
+        // 普通巡检日志，直接推入日志队列
+        if (msg.data) {
+          logStore.update(logs => [{
+            time: new Date().toLocaleTimeString(),
+            level: 'info',
+            message: msg.data
+          }, ...logs].slice(0, 100));
+        }
+        break;
+      }
+
+      case 'inspection_alert': {
+        // 严重报警，触发弹窗并写入红色日志
+        if (msg.data) {
+          alertStore.push({ 
+            level: 'critical', 
+            type: '巡检异常', 
+            area: '现场', 
+            detail: msg.data, 
+            timestamp: new Date().toLocaleTimeString() 
+          });
+          logStore.update(logs => [{
+            time: new Date().toLocaleTimeString(),
+            level: 'error',
+            message: `🚨 ${msg.data}`
+          }, ...logs].slice(0, 100));
+        }
+        break;
+      }
+
+      case 'tts_play': {
+        // 调用浏览器原生 TTS 进行语音播报
+        if (msg.data && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+          const utterance = new SpeechSynthesisUtterance(msg.data);
+          utterance.lang = 'zh-CN';
+          window.speechSynthesis.speak(utterance);
         }
         break;
       }
