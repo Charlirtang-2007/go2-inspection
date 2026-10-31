@@ -223,6 +223,11 @@ async def start_inspection():
     
     # 重置急停标志
     inspection_module.FORCE_STOP = False
+
+    # 关键：把当前主线程的事件循环交给剧本子线程
+    # 原因：FastAPI 的 WS 绑在主 loop 上，子线程没有自己的 loop，必须借用主 loop
+    # 不注入的话，run_inspection.push_ws 会因 MAIN_LOOP 为 None 而跳过推送
+    inspection_module.MAIN_LOOP = asyncio.get_running_loop()
     
     # 使用后台线程跑，接口瞬间返回，绝不阻塞视频流
     def run_task():

@@ -8,20 +8,48 @@ from app.services.camera_service import camera_service
 from app.services.detection_service import detect_aruco_markers, enable_detection, disable_detection, get_latest_result
 from app.services.detectors import preset_detector
 # ★ 引入 WebSocket 管理器（路径需根据你实际的 websocket_manager 位置调整）
-from app.utils.websocket_manager import manager 
+from app.utils.websocket_manager import manager
+from app.services.notification_service import notification_service 
 
 URL = "http://192.168.1.100:8000/api/robot/command"
 FORCE_STOP = False
 
+# 主线程事件循环句柄，由 main.py 注入（inspection_module.MAIN_LOOP = ...）
+MAIN_LOOP = None
+
+
 def push_ws(event_type: str, msg: str):
-    """
-    后台子线程中发送 WebSocket 消息的统一接口。
-    因为 FastAPI 的 WS 是异步的，而巡检是同步阻塞的，必须用 asyncio.run 包装。
-    """
+    # 后台子线程中发送 WebSocket 消息。
+    # 铁律：严禁 asyncio.run()。子线程新建 loop 会与主 loop 上的 WS 对象冲突，
+    #       表现为前端画面卡死、日志不滚、弹窗丢失，异常还被吞掉。
+    # 必须 run_coroutine_threadsafe 把协程投递回主事件循环。
+    # data 直接传字符串，与前端 websocket.ts 的 msg.data 用法严格对齐。
     try:
-        asyncio.run(manager.broadcast({"type": event_type, "data": msg}))
+        if MAIN_LOOP is None or MAIN_LOOP.is_closed():
+            print(f"WS 推送跳过（主循环未就绪）: {event_type}")
+            return
+        asyncio.run_coroutine_threadsafe(
+            manager.broadcast({"type": event_type, "data": msg}),
+            MAIN_LOOP,
+        )
     except Exception as e:
-        print(f"⚠️ WS 推送失败: {e}")
+        print(f"WS 推送失败: {e}")
+
+
+def _notify_async(anomaly_type: str, detail: str):
+    # 子线程里触发异步通知（PushPlus/企业微信）。
+    # 统一用 MAIN_LOOP + run_coroutine_threadsafe，严禁 asyncio.run。
+    if MAIN_LOOP is None or MAIN_LOOP.is_closed():
+        print(f"通知跳过（主循环未就绪）: {anomaly_type}")
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(
+            notification_service.notify_anomaly(anomaly_type, detail),
+            MAIN_LOOP,
+        )
+    except Exception as e:
+        print(f"通知投递失败: {e}")
+
 
 def send(cmd, timeout=2.0):
     try:
@@ -96,8 +124,9 @@ def run_detection(timeout=10):
         if get_latest_result().get("has_anomaly"):
             print("🚨 模型触发异常报警！")
             # ★ 推送报警和 TTS
-            push_ws("alert", "AI 模型检测到烟雾异常！")
-            push_ws("tts", "警告，检测到异常")
+            push_ws("inspection_alert", "AI 模型检测到烟雾异常！")
+            push_ws("tts_play", "警告，检测到异常")
+            _notify_async("烟雾异常", "A区域异常点检测到烟雾异常")
             break
         time.sleep(0.5)
     else:
@@ -105,8 +134,9 @@ def run_detection(timeout=10):
             print("⚠️ 10 秒超时，触发 Preset 兜底！")
             preset_detector.trigger(area="异常区", reason="兜底触发")
             # ★ 推送兜底报警
-            push_ws("alert", "系统超时，强制触发兜底报警！")
-            push_ws("tts", "警告，系统触发兜底报警")
+            push_ws("inspection_alert", "A区域异常点检测到烟雾异常！")
+            push_ws("tts_play", "警告，A区域异常点检测到烟雾异常")
+            _notify_async("烟雾异常", "A区域异常点检测到烟雾异常（兜底）")
     disable_detection()
 
 def listen_for_stop():
@@ -145,8 +175,8 @@ def main():
     walk_to_marker(1)
     if FORCE_STOP: return
     # ★ 推送前端日志和 TTS
-    push_ws("log", "已到达 A 区，正在调整机位...")
-    push_ws("tts", "已到达 A 区")
+    push_ws("inspection_log", "已到达 A 区，正在调整机位...")
+    push_ws("tts_play", "已到达 A 区")
     
     print("前往 A 区异常点 a...")
     do_action("right", 2.0)
@@ -163,8 +193,8 @@ def main():
     walk_to_marker(2)
     if FORCE_STOP: return
     # ★ 推送前端日志和 TTS
-    push_ws("log", "已到达 B 区")
-    push_ws("tts", "已到达 B 区")
+    push_ws("inspection_log", "已到达 B 区")
+    push_ws("tts_play", "已到达 B 区")
     
     print("前往 B 区异常点 b...")
     do_action("left", 2.0)
@@ -186,16 +216,18 @@ def main():
     do_action("forward", 4.0) 
     
     print("📢 [前端推送] 到达复检异常点 b，准备坐下检查...")
-    push_ws("log", "到达复检异常点 b，准备坐下检查...")
-    push_ws("tts", "开始复检")
+    push_ws("inspection_log", "到达复检异常点 b，准备坐下检查...")
+    push_ws("tts_play", "开始复检")
     send_once("sit", wait_time=2.0) 
     time.sleep(3)                   
     print("📢 [前端推送] 复检异常点 b，无异常！")
-    push_ws("log", "复检异常点 b，无异常！")
+    push_ws("inspection_log", "复检异常点 b，无异常！")
     send_once("standup", wait_time=2.0) 
     time.sleep(1.0)                 
     
     print("左转离开异常点 b，准备识别 B 码...")
+    push_ws("inspection_log", "正在离开 B 区域...")
+    push_ws("tts_play", "正在离开 B 区域")
     do_action("left", 2.0)          
     do_action("forward", 4.0)       
 
@@ -224,6 +256,8 @@ def main():
     # 阶段 6：离开 A 区异常点，前往入口/终点
     # =====================================================================
     print("\n[6] 离开 A 区异常点，准备前往入口结束...")
+    push_ws("inspection_log", "正在离开 A 区域...")
+    push_ws("tts_play", "正在离开 A 区域")
     
     # 【1. 转身出通道】
     print("🔄 左转出通道...")

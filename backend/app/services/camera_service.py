@@ -51,6 +51,7 @@ class CameraService:
 
         k2b_ip = os.getenv("K2B_IP", "192.168.1.100")
         stream_url = f"http://{k2b_ip}:8000/api/camera/video"
+        self._stream_url = stream_url  # 供 _capture_loop 断流重连
         
         print(f"📷 尝试连接 K2B 视频流: {stream_url}...")
         
@@ -109,7 +110,23 @@ class CameraService:
 
             try:
                 # [核心] grab() 快速抓取并丢弃底层积压的旧帧，不解码，极快
-                self._cap.grab()
+                ok = self._cap.grab()
+                if not ok:
+                    # grab 失败时再调 retrieve 会刷 FFmpeg 的 Picture does not contain data
+                    self._grab_fail = getattr(self, "_grab_fail", 0) + 1
+                    if self._grab_fail >= 100:  # 约 1 秒连续失败，重连视频流
+                        print(f"CameraService 连续 {self._grab_fail} 次 grab 失败，重连视频流...")
+                        self._grab_fail = 0
+                        try:
+                            self._cap.release()
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                        self._cap = cv2.VideoCapture(self._stream_url)
+                        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    time.sleep(0.01)
+                    continue
+                self._grab_fail = 0
                 
                 # [核心] retrieve() 只解码刚刚抓到的最后一帧，保证画面清晰、实时
                 ret, frame = self._cap.retrieve()
