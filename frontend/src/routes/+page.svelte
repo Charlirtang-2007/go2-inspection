@@ -421,7 +421,6 @@
 </div>
 <AlertModal />
 <AlertTester />
-<DetectionDebug />
 
 <style>
   /* ============ 纯样式（完全保留你原来的） ============ */

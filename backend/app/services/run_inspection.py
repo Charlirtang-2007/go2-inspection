@@ -199,52 +199,64 @@ def main():
     do_action("left", 2.0)          
     do_action("forward", 4.0)       
 
-    # ================= 阶段 5 =================
+    # =====================================================================
+    # 阶段 5：再次确认 B区与 A区（复检过程）
+    # =====================================================================
     print("\n[5] 再次识别 B 区 (ID 2)...")
     walk_to_marker(2)
     print("📢 [前端推送] 看到 B 码，离开 b 区域中！")
-    push_ws("log", "看到 B 码，离开 b 区域中！")
     if FORCE_STOP: return
 
     print("右转前往异常点 a...")
     do_action("right", 2.0)
 
+    # ★ 核心修正：复检时，直接进入 A 区通道，先走到异常点检查
     print("前往 A 异常点...")
     do_action("forward", 4.0)  
-    send_once("sit", wait_time=2.0) 
+    send_once("sit", wait_time=2.0) # 在异常点坐下
     print("📢 三端触发，报警异常！等 10 秒...")
-    push_ws("log", "到达 A 区异常点，等待检测结果...")
+    run_detection(timeout=10)  # 触发 10 秒报警检测
     
-    # 触发检测（内部会推送报警）
-    run_detection(timeout=10)  
-    
-    send_once("standup", wait_time=2.0) 
-    time.sleep(1.0) 
+    send_once("standup", wait_time=2.0) # 站起
+    time.sleep(1.0) # 防止站起后吞指令
 
-    # ================= 阶段 6 =================
+    # =====================================================================
+    # 阶段 6：离开 A 区异常点，前往入口/终点
+    # =====================================================================
     print("\n[6] 离开 A 区异常点，准备前往入口结束...")
+    
+    # 【1. 转身出通道】
     print("🔄 左转出通道...")
     do_action("left", 2.0) 
     
+    # 【2. 前进】走出异常点通道
     print("🚶 前进，走出异常点通道...")
-    do_action("forward", 4.0) 
+    do_action("forward", 4.0)
     
+    # 【3. A码】出通道后，识别 A 区码 (ID 1)，确认离开
     print("🎯 寻找 A 区码 (ID 1)...")
     walk_to_marker(1)
     if FORCE_STOP: return
     
+    # 【4. 转身回主路】
     print("🔄 转身，面朝入口方向...")
     do_action("left", 2.0) 
     
+    # 【5. 前进】沿着主路直奔入口/终点
     print("🚶 前进，前往入口...")
     do_action("forward", 4.0) 
     
+    # 【6. 入口，停下】
     print("🛑 到达入口，停下...")
     send_once("sit", wait_time=2.0)
     
     print("📢 [前端推送] 巡检全部结束！")
-    push_ws("log", "巡检任务全部结束！")
-    push_ws("tts", "巡检任务结束")
+    
+    # 关闭摄像头流，释放资源。
+    camera_service.stop()
+    
+    send_once("sit", wait_time=2.0)
+    print("📢 [前端推送] 巡检全部结束！")
     camera_service.stop()
 
 if __name__ == "__main__":
