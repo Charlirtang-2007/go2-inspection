@@ -16,9 +16,8 @@ from app.services.recording_service import recording_service
 from app.services import detection_service
 from app.services.notification_service import notification_service
 from app.utils.mdns_service import MDNSService
-from pydantic import BaseModel
 
-# 引入我们的巡检剧本模块
+# 引入巡检剧本模块
 import app.services.run_inspection as inspection_module
 
 # 全局变量，记录后台线程
@@ -106,7 +105,7 @@ app.include_router(detection.router)
 app.include_router(route.router)
 
 
-# ========== 指令处理（保持不变） ==========
+# ========== 指令处理 ==========
 async def execute_robot_command(cmd: str):
     robot_service = get_robot_service()
 
@@ -214,32 +213,36 @@ async def root():
         },
     }
 
+
 @app.post("/api/inspection/start")
 async def start_inspection():
     """前端点击“开始巡检”调用的接口"""
     global inspection_thread
     if inspection_thread is not None and inspection_thread.is_alive():
         return {"success": False, "msg": "巡检任务正在执行中，请勿重复启动！"}
-    
+
     # 重置急停标志
     inspection_module.FORCE_STOP = False
 
-    # 关键：把当前主线程的事件循环交给剧本子线程
-    # 原因：FastAPI 的 WS 绑在主 loop 上，子线程没有自己的 loop，必须借用主 loop
-    # 不注入的话，run_inspection.push_ws 会因 MAIN_LOOP 为 None 而跳过推送
+    # ★ 核心关键：把当前主线程的事件循环交给剧本子线程。
+    # 原因：FastAPI 的 WebSocket 是异步的，绑在这个 loop 上；
+    # 巡检跑在 threading.Thread 里，子线程没有自己的 loop，
+    # 必须拿到主 loop 才能把 WS 推送安全地丢回去。
+    # 不注入的话，run_inspection.push_ws 会因 MAIN_LOOP 为 None 而跳过推送。
     inspection_module.MAIN_LOOP = asyncio.get_running_loop()
-    
+
     # 使用后台线程跑，接口瞬间返回，绝不阻塞视频流
     def run_task():
         try:
             inspection_module.main()
         except Exception as e:
             print(f"❌ 巡检异常中断: {e}")
-            
+
     inspection_thread = threading.Thread(target=run_task, daemon=True)
     inspection_thread.start()
-    
+
     return {"success": True, "msg": "巡检任务已启动"}
+
 
 @app.post("/api/inspection/stop")
 async def stop_inspection():
