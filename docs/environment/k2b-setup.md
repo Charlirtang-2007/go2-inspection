@@ -268,19 +268,55 @@ if __name__ == "__main__":
 
 ### 5.5 systemd 服务
 
-```bash
-sudo systemctl cat go2-gateway.service
+#### 5.5.1 完整 unit 文件
+
+```ini
+# /etc/systemd/system/go2-gateway.service
+[Unit]
+Description=Go2 K2B Edge Gateway Service
+After=network-online.target NetworkManager-wait-online.service
+Wants=network-online.target NetworkManager-wait-online.service
+
+[Service]
+Type=simple
+User=kickpi
+# ★ 关键：systemd 不读 .bashrc，必须在这里声明 DDS 环境变量
+Environment="CYCLONEDDS_HOME=/home/kickpi/cyclonedds/install"
+WorkingDirectory=/home/kickpi
+# 执行你的网关脚本
+ExecStart=/usr/bin/python3 /home/kickpi/gateway.py
+# 如果程序崩溃，自动重启
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-已确认的关键字段：
+#### 5.5.2 字段解读
 
-| 字段 | 值 |
-| :--- | :--- |
-| `ExecStart` | 指向 `/home/kickpi/gateway.py` |
-| `WorkingDirectory` | `/home/kickpi` |
-| `Restart` | `always` |
+| 字段 | 值 | 作用 | 注意事项 |
+| :--- | :--- | :--- | :--- |
+| `After` | `network-online.target NetworkManager-wait-online.service` | 等网络就绪后再启动 | 确保 `wlan0` / `eth0` 已配好 |
+| `Wants` | 同上 | 弱依赖，缺失不阻塞启动 | - |
+| `Type` | `simple` | 主进程即 `ExecStart` | - |
+| `User` | `kickpi` | 以普通用户运行 | 硬件访问权限需提前配好 |
+| `Environment` | `CYCLONEDDS_HOME=...` | **systemd 不读 `.bashrc`**，必须在此声明 | 与 `gateway.py` 内的 `os.environ` 构成双重保险 |
+| `WorkingDirectory` | `/home/kickpi` | 进程工作目录 | 影响相对路径解析 |
+| `ExecStart` | `/usr/bin/python3 /home/kickpi/gateway.py` | 启动命令 | 用绝对路径，避免 PATH 问题 |
+| `Restart` | `always` | 崩溃自动重启 | 正常退出也会重启 |
+| `RestartSec` | `3` | 重启间隔 3 秒 | 防频繁重启刷日志 |
+| `WantedBy` | `multi-user.target` | 多用户模式启用 | 配合 `systemctl enable` 生效 |
 
-> **TODO**：完整 unit 文件内容需 Charlirtang 执行 `systemctl cat` 后贴入。
+#### 5.5.3 双重保险说明
+
+`gateway.py` 第一行就 `os.environ["CYCLONEDDS_HOME"] = ...`，而 unit 文件又用 `Environment=` 声明了一次。**两处都保留，不要删任何一处**：
+
+- **脚本内硬编码**：保证手动 `python3 gateway.py` 也能跑，不依赖 systemd。
+- **unit 内声明**：符合 systemd 惯例，`Environment=` 在进程启动前注入，对 `import unitree_sdk2py` 之前任何读取环境变量的代码都可见。
+- 两者不冲突，删除任何一处都会降低容错性。
+
+> **重启注意**：`gateway.py` 的 `uvicorn.run` 没有 `reload=True`，改代码后必须 `sudo systemctl restart go2-gateway.service`，不会自动重载。
 
 ### 5.6 开机自启
 
@@ -330,9 +366,9 @@ curl http://192.168.211.194:8000/
 - [ ] `wlan0` 静态 IP 的配置方式需补充
 - [ ] CycloneDDS 实际 checkout 的 tag/branch 需确认
 - [ ] `unitree_sdk2py` 仓库地址需补充
-- [ ] `go2-gateway.service` 完整 unit 文件需贴入
-- [ ] 根 README 的 `K2B_IP=192.168.62.240` 示例值与实际 `192.168.211.194` 不一致，需同步或标注
-- [ ] 根 README 的「手机热点」描述已过时，实际是路由器
+- [x] `go2-gateway.service` 完整 unit 文件已补入（2026-11-04）
+- [x] 根 README 的 `K2B_IP` 示例值已同步为 `192.168.211.194`（2026-11-04）
+- [x] 根 README 的网络描述已更新为路由器（2026-11-04）
 
 ## 维护规则
 
