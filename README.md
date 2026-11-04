@@ -161,7 +161,7 @@ go2-inspection/
 - **K2B**：已烧录 Ubuntu 22.04 Server，已编译 DDS，已配好 `gateway.py` 并设为 systemd 服务。
 - **AI机台**：Ubuntu 22.04，Python 3.10+，安装了 `requests` 和 `opencv-python`。
 - **笔记本**：Node.js 18+，前端打包后可直接双击 exe 运行。
-- **网络**：三台设备处于同一局域网（推荐使用稳定的手机热点或随身 WiFi）。
+- **网络**：三台设备处于同一局域网（当前用路由器，K2B wlan0 静态 IP `192.168.211.194`）。
 
 ### 1. K2B 网关启动 (开机自启)
 K2B 联网后，连上狗，直接插电开机。网关已配置为 systemd 服务，会自动运行。
@@ -181,7 +181,7 @@ vim .env
 ```
 `.env` 必备项：
 ```bash
-K2B_IP=192.168.62.240     # K2B 的局域网 IP
+K2B_IP=192.168.211.194    # K2B 的局域网 IP（wlan0 静态）
 DETECTION_ENGINE=vlm      # 默认使用云端千问进行检测
 DASHSCOPE_API_KEY=sk-xxx  # 千问 API Key
 PUSHPLUS_TOKEN=xxx        # 微信推送
