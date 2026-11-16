@@ -40,7 +40,7 @@
 | **requests** | - | HTTP 客户端 | 与 K2B 通信，简单够用 |
 | **WebSocket** | - | 实时双向通信 | 前后端指令与状态推送 |
 | **zeroconf** | - | mDNS | 后端侧 mDNS 支持 |
-| **阿里云百炼（千问 `qwen3-vl-plus`）** | - | 云端 VLM 检测 | 识别烟雾/火焰，实测置信度 0.85+ |
+| **阿里云百炼（千问 `qwen3-vl-plus`）** | - | 云端 VLM 检测 | 识别烟雾，实测置信度 0.85+ |
 
 **为什么不用 Flask**：FastAPI 团队已有经验，且原生异步 + WebSocket 支持更好；Flask 要额外配 ASGI 适配层。
 
@@ -70,7 +70,7 @@
 | :--- | :--- | :--- | :--- |
 | `preset` | 兜底 | 预设规则 | 云端不可用时的最后防线 |
 | `yolo` | 本地 | YOLO 模型 | `models/smoke.pt`，CPU 推理 |
-| `vlm` | 云端 | 千问 `qwen3-vl-plus` | 识别烟雾/火焰，置信度 0.85+ |
+| `vlm` | 云端 | 千问 `qwen3-vl-plus` | 识别烟雾，置信度 0.85+ |
 
 组合方式：`preset+yolo+vlm`（多路并行，任一检测到即告警）、单路、或 `both` 双路。
 
