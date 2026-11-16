@@ -57,7 +57,7 @@
 
 > 帮助接手者快速定位代码状态。可用 `git log --oneline -5` 更新。
 
-- `待补充` - 提交示例：`feat: 移除ArUco依赖，切换纯时间轴盲走；修复坐立侧翻与并发死锁`（你需要把真实 commit hash 填进来）
+- 待补充：请执行 `git log --oneline -5` 后，把移除 ArUco / 修复侧翻与死锁的 commit hash 填到此处
 
 ## 阶段总结索引
 
