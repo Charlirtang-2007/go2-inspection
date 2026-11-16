@@ -1,5 +1,7 @@
 # 🤖 Go2 智能巡检系统
 
+> **状态：比赛演示已结束，进入交接阶段。** 接手者请先读 [`docs/HANDOVER-SNAPSHOT.md`](docs/HANDOVER-SNAPSHOT.md)。
+
 > 基于宇树 Go2 X 机器狗的智慧工厂/园区 AI 巡检系统  
 > 参赛项目：职业院校技能大赛——新一代信息技术赛道
 
